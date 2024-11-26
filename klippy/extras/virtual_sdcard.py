@@ -473,49 +473,49 @@ class VirtualSD:
             file_position = int(print_state['file_position'])
             logging.info("RESTORE_PRINT: Found state - file: %s, position: %d", file_path, file_position)
             
-            # 初始化打印机状态
-            self.gcode.run_script("M82")  # 设置绝对挤出
-            self.gcode.run_script("G90")  # 设置绝对坐标
-            self.gcode.run_script("M220 S100")  # 重置速度因子
-            self.gcode.run_script("M221 S100")  # 重置挤出因子
-            logging.info("RESTORE_PRINT: Initialized printer state")
+            # 获取必要的对象
+            toolhead = self.printer.lookup_object('toolhead')
+            gcode_move = self.printer.lookup_object('gcode_move')
             
-            # 1. 先设置温度开始预热
+            # 1. 设置温度
             if 'temperatures' in state_data:
                 temps = state_data['temperatures']
                 try:
                     if 'extruder' in temps:
+                        extruder = toolhead.get_extruder()
                         extruder_temp = float(temps['extruder'])
-                        self.gcode.run_script(f"M104 S{extruder_temp}")  # 使用M104而不是SET_HEATER_TEMPERATURE
+                        extruder.set_temp(extruder_temp)
                         logging.info("RESTORE_PRINT: Set extruder temp to %.2f", extruder_temp)
                     if 'bed' in temps:
                         bed_temp = float(temps['bed'])
-                        self.gcode.run_script(f"M140 S{bed_temp}")  # 使用M140而不是SET_HEATER_TEMPERATURE
+                        heater_bed = self.printer.lookup_object('heater_bed')
+                        heater_bed.set_temp(bed_temp)
                         logging.info("RESTORE_PRINT: Set bed temp to %.2f", bed_temp)
                 except Exception as e:
                     logging.exception("RESTORE_PRINT: Error setting temperatures: %s", str(e))
             
-            # 2. 执行回零操作
-            try:
-                self.gcode.run_script("G28")
-                logging.info("RESTORE_PRINT: Homing completed")
-            except Exception as e:
-                logging.exception("RESTORE_PRINT: Error during homing: %s", str(e))
-            
-            # 3. 等待温度达到目标值
+            # 2. 等待加热完成
             if 'temperatures' in state_data:
-                temps = state_data['temperatures']
                 try:
                     if 'extruder' in temps:
-                        extruder_temp = float(temps['extruder'])
-                        self.gcode.run_script(f"M109 S{extruder_temp}")  # 使用M109而不是TEMPERATURE_WAIT
-                        logging.info("RESTORE_PRINT: Extruder temp reached %.2f", extruder_temp)
-                    if 'bed' in temps:
-                        bed_temp = float(temps['bed'])
-                        self.gcode.run_script(f"M190 S{bed_temp}")  # 使用M190而不是TEMPERATURE_WAIT
-                        logging.info("RESTORE_PRINT: Bed temp reached %.2f", bed_temp)
+                        while not extruder.can_extrude:
+                            self.reactor.pause(self.reactor.monotonic() + 0.1)
+                        logging.info("RESTORE_PRINT: Extruder temp reached")
                 except Exception as e:
                     logging.exception("RESTORE_PRINT: Error waiting for temperatures: %s", str(e))
+            
+            # 3. 设置运动模式
+            try:
+                if 'motion_mode' in state_data:
+                    motion = state_data['motion_mode']
+                    gcode_move.set_move_transform(None, None)
+                    if 'absolute_coordinates' in motion:
+                        gcode_move.absolute_coord = motion['absolute_coordinates'].lower() == 'true'
+                    if 'absolute_extrude' in motion:
+                        gcode_move.absolute_extrude = motion['absolute_extrude'].lower() == 'true'
+                    logging.info("RESTORE_PRINT: Motion mode restored")
+            except Exception as e:
+                logging.exception("RESTORE_PRINT: Error setting motion mode: %s", str(e))
             
             # 4. 加载文件
             logging.info("RESTORE_PRINT: Loading file: %s", file_path)
@@ -526,28 +526,35 @@ class VirtualSD:
             self.file_position = file_position
             logging.info("RESTORE_PRINT: Set file position to %d", file_position)
             
-            # 6. 如果有位置信息，恢复位置
+            # 6. 恢复位置
             if 'position' in state_data:
-                pos = state_data['position']
-                logging.info("RESTORE_PRINT: Restoring position - X:%s Y:%s Z:%s", 
-                            pos['x'], pos['y'], pos['z'])
-                # 先提升Z轴
-                self.gcode.run_script("G1 Z50 F600")
-                # 移动到XY位置
-                self.gcode.run_script(f"G1 X{pos['x']} Y{pos['y']} F3000")
-                # 移动到Z位置
-                self.gcode.run_script(f"G1 Z{pos['z']} F600")
-                # 设置E位置
-                self.gcode.run_script(f"G92 E{pos['e']}")
-                logging.info("RESTORE_PRINT: Position restored")
+                try:
+                    pos = state_data['position']
+                    x = float(pos['x'])
+                    y = float(pos['y'])
+                    z = float(pos['z'])
+                    e = float(pos['e'])
+                    
+                    # 设置位置
+                    gcode_move.set_position([x, y, z, e])
+                    logging.info("RESTORE_PRINT: Position restored to X:%.2f Y:%.2f Z:%.2f E:%.2f", 
+                               x, y, z, e)
+                except Exception as e:
+                    logging.exception("RESTORE_PRINT: Error restoring position: %s", str(e))
             
-            # 7. 如果有速度信息，恢复速度
+            # 7. 设置速度因子
             if 'speed' in state_data:
-                speed = state_data['speed']
-                if 'speed_factor' in speed:
-                    speed_value = float(speed['speed_factor'])*100
-                    self.gcode.run_script(f"M220 S{speed_value}")
-                    logging.info("RESTORE_PRINT: Set speed factor to %f", speed_value)
+                try:
+                    speed = state_data['speed']
+                    if 'speed_factor' in speed:
+                        speed_factor = float(speed['speed_factor'])
+                        gcode_move.speed_factor = speed_factor
+                    if 'extrude_factor' in speed:
+                        extrude_factor = float(speed['extrude_factor'])
+                        gcode_move.extrude_factor = extrude_factor
+                    logging.info("RESTORE_PRINT: Speed factors restored")
+                except Exception as e:
+                    logging.exception("RESTORE_PRINT: Error setting speed factors: %s", str(e))
             
             # 8. 开始打印
             logging.info("RESTORE_PRINT: Starting print")
