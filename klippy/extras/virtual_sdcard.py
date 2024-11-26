@@ -3,7 +3,7 @@
 # Copyright (C) 2018-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, sys, logging, io
+import os, sys, logging, io, configparser
 
 VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
 
@@ -46,6 +46,13 @@ class VirtualSD:
         self.gcode.register_command(
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
+        # 添加打印状态保存相关的变量
+        self.cmd_counter = 0
+        self.save_state_threshold = 30
+        config_path = os.path.expanduser('~/printer_data/config')
+        self.state_file_1 = os.path.join(config_path, 'print_state.cfg')
+        self.state_file_2 = os.path.join(config_path, 'print_state_temp.cfg')
+        self.last_saved_to_first = True
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -293,6 +300,14 @@ class VirtualSD:
                     return self.reactor.NEVER
                 lines = []
                 partial_input = ""
+            # 检查是否需要保存状态
+            self.cmd_counter += 1
+            if self.cmd_counter >= self.save_state_threshold:
+                self.save_print_state()
+                self.cmd_counter = 0
+            # 检查是否是换层命令 (M73)
+            if line.strip().startswith('M73'):
+                self.save_print_state()
         logging.info("Exiting SD card print (position %d)", self.file_position)
         self.work_timer = None
         self.cmd_from_sd = False
@@ -303,6 +318,80 @@ class VirtualSD:
         else:
             self.print_stats.note_complete()
         return self.reactor.NEVER
+    def save_print_state(self):
+        if self.current_file is None:
+            return
+        
+        config = configparser.ConfigParser()
+        
+        # 基本打印状态
+        config['print_state'] = {
+            'file_path': str(self.file_path()),
+            'file_position': str(self.file_position),
+            'file_size': str(self.file_size),
+            'progress': str(self.progress())
+        }
+        
+        # 获取打印机状态
+        try:
+            # 获取工具头对象和位置信息
+            toolhead = self.printer.lookup_object('toolhead')
+            current_pos = toolhead.get_position()
+            config['position'] = {
+                'x': str(current_pos[0]),
+                'y': str(current_pos[1]),
+                'z': str(current_pos[2]),
+                'e': str(current_pos[3])
+            }
+            
+            # 从toolhead获取当前活跃挤出头信息
+            if toolhead:
+                config['extruder'] = {}
+                active_extruder = toolhead.get_extruder().get_name()
+                config['extruder']['active_extruder'] = str(active_extruder)
+                
+            # 获取所有挤出头温度
+            config['temperatures'] = {}
+            for i in range(2):  # 最多支持2个挤出头
+                extruder_name = 'extruder' if i == 0 else f'extruder{i}'
+                extruder = self.printer.lookup_object(extruder_name, None)
+                if extruder:
+                    temp = extruder.get_status(self.reactor.monotonic())['temperature']
+                    config['temperatures'][extruder_name] = str(temp)
+                    
+            # 获取热床温度
+            heater_bed = self.printer.lookup_object('heater_bed', None)
+            if heater_bed:
+                config['temperatures']['bed'] = str(heater_bed.get_status(self.reactor.monotonic())['temperature'])
+            
+            # 获取打印速度
+            gcode_move = self.printer.lookup_object('gcode_move')
+            if gcode_move:
+                speed = gcode_move.get_status(self.reactor.monotonic())['speed']
+                speed_factor = gcode_move.get_status(self.reactor.monotonic())['speed_factor']
+                config['speed'] = {
+                    'speed': str(speed),
+                    'speed_factor': str(speed_factor)
+                }
+            
+            # 获取风扇速度
+            fan = self.printer.lookup_object('fan', None)
+            if fan:
+                config['fan'] = {
+                    'speed': str(fan.get_status(self.reactor.monotonic())['speed'])
+                }
+                
+        except:
+            logging.exception("Error getting printer state data")
+        
+        # 交替保存到两个文件
+        save_file = self.state_file_1 if self.last_saved_to_first else self.state_file_2
+        try:
+            with open(save_file, 'w') as f:
+                config.write(f)
+            self.last_saved_to_first = not self.last_saved_to_first
+        except:
+            logging.exception("Error saving print state")
 
 def load_config(config):
     return VirtualSD(config)
