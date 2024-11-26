@@ -433,7 +433,7 @@ class VirtualSD:
         
         logging.info("RESTORE_PRINT: Starting restore process")
         
-        # 尝试读取两个状态文件
+        # 读取状态文件
         config = configparser.ConfigParser()
         state_file = None
         state_data = None
@@ -465,131 +465,105 @@ class VirtualSD:
         if state_data is None:
             logging.info("RESTORE_PRINT: No valid state file found")
             raise gcmd.error("No valid print state found")
-        
+
         try:
             # 获取打印状态
             print_state = state_data['print_state']
             file_path = print_state['file_path']
             file_position = int(print_state['file_position'])
             logging.info("RESTORE_PRINT: Found state - file: %s, position: %d", file_path, file_position)
-            
-            # 获取必要的对象
-            toolhead = self.printer.lookup_object('toolhead')
-            gcode_move = self.printer.lookup_object('gcode_move')
-            
-            # 1. 设置温度
+
+            # 1. 先恢复温度
             if 'temperatures' in state_data:
                 temps = state_data['temperatures']
-                try:
-                    if 'extruder' in temps:
-                        extruder = toolhead.get_extruder()
-                        extruder_temp = float(temps['extruder'])
-                        extruder.set_temp(extruder_temp)
-                        logging.info("RESTORE_PRINT: Set extruder temp to %.2f", extruder_temp)
-                    if 'bed' in temps:
-                        bed_temp = float(temps['bed'])
-                        heater_bed = self.printer.lookup_object('heater_bed')
-                        heater_bed.set_temp(bed_temp)
-                        logging.info("RESTORE_PRINT: Set bed temp to %.2f", bed_temp)
-                except Exception as e:
-                    logging.exception("RESTORE_PRINT: Error setting temperatures: %s", str(e))
-            
-            # 2. 等待加热完成
+                if 'extruder' in temps:
+                    self.gcode.run_script_from_command(f"M104 S{float(temps['extruder'])}")
+                if 'bed' in temps:
+                    self.gcode.run_script_from_command(f"M140 S{float(temps['bed'])}")
+                logging.info("RESTORE_PRINT: Temperature commands sent")
+
+            # 2. 执行回零
+            self.gcode.run_script_from_command("G28")
+            logging.info("RESTORE_PRINT: Homing completed")
+
+            # 3. 等待温度
             if 'temperatures' in state_data:
-                try:
-                    if 'extruder' in temps:
-                        while not extruder.can_extrude:
-                            self.reactor.pause(self.reactor.monotonic() + 0.1)
-                        logging.info("RESTORE_PRINT: Extruder temp reached")
-                except Exception as e:
-                    logging.exception("RESTORE_PRINT: Error waiting for temperatures: %s", str(e))
-            
-            # 3. 设置运动模式
-            try:
-                if 'motion_mode' in state_data:
-                    motion = state_data['motion_mode']
-                    gcode_move.set_move_transform(None, None)
-                    if 'absolute_coordinates' in motion:
-                        gcode_move.absolute_coord = motion['absolute_coordinates'].lower() == 'true'
-                    if 'absolute_extrude' in motion:
-                        gcode_move.absolute_extrude = motion['absolute_extrude'].lower() == 'true'
-                    logging.info("RESTORE_PRINT: Motion mode restored")
-            except Exception as e:
-                logging.exception("RESTORE_PRINT: Error setting motion mode: %s", str(e))
-            
+                temps = state_data['temperatures']
+                if 'extruder' in temps:
+                    self.gcode.run_script_from_command(f"M109 S{float(temps['extruder'])}")
+                if 'bed' in temps:
+                    self.gcode.run_script_from_command(f"M190 S{float(temps['bed'])}")
+                logging.info("RESTORE_PRINT: Temperature reached")
+
             # 4. 加载文件
             logging.info("RESTORE_PRINT: Loading file: %s", file_path)
-            self._load_file_by_path(gcmd, file_path)
-            
-            # 5. 设置文件位置
-            self.current_file.seek(file_position)
+            f = io.open(file_path, 'r', newline='')
+            f.seek(0, os.SEEK_END)
+            fsize = f.tell()
+            f.seek(file_position)
+            self.current_file = f
             self.file_position = file_position
-            logging.info("RESTORE_PRINT: Set file position to %d", file_position)
-            
+            self.file_size = fsize
+            self.print_stats.set_current_file(file_path)
+            logging.info("RESTORE_PRINT: File loaded and positioned")
+
+            # 5. 恢复打印设置
+            if 'motion_mode' in state_data:
+                motion = state_data['motion_mode']
+                if motion.get('absolute_coordinates', 'true').lower() == 'true':
+                    self.gcode.run_script_from_command("G90")
+                else:
+                    self.gcode.run_script_from_command("G91")
+                if motion.get('absolute_extrude', 'true').lower() == 'true':
+                    self.gcode.run_script_from_command("M82")
+                else:
+                    self.gcode.run_script_from_command("M83")
+
             # 6. 恢复位置
             if 'position' in state_data:
-                try:
-                    pos = state_data['position']
-                    x = float(pos['x'])
-                    y = float(pos['y'])
-                    z = float(pos['z'])
-                    e = float(pos['e'])
-                    
-                    # 设置位置
-                    gcode_move.set_position([x, y, z, e])
-                    logging.info("RESTORE_PRINT: Position restored to X:%.2f Y:%.2f Z:%.2f E:%.2f", 
-                               x, y, z, e)
-                except Exception as e:
-                    logging.exception("RESTORE_PRINT: Error restoring position: %s", str(e))
-            
-            # 7. 设置速度因子
+                pos = state_data['position']
+                self.gcode.run_script_from_command(f"G92 X{pos['x']} Y{pos['y']} Z{pos['z']} E{pos['e']}")
+                logging.info("RESTORE_PRINT: Position restored")
+
+            # 7. 恢复速度设置
             if 'speed' in state_data:
-                try:
-                    speed = state_data['speed']
-                    if 'speed_factor' in speed:
-                        speed_factor = float(speed['speed_factor'])
-                        gcode_move.speed_factor = speed_factor
-                    if 'extrude_factor' in speed:
-                        extrude_factor = float(speed['extrude_factor'])
-                        gcode_move.extrude_factor = extrude_factor
-                    logging.info("RESTORE_PRINT: Speed factors restored")
-                except Exception as e:
-                    logging.exception("RESTORE_PRINT: Error setting speed factors: %s", str(e))
-            
-            # 8. 开始打印
+                speed = state_data['speed']
+                if 'speed_factor' in speed:
+                    speed_value = float(speed['speed_factor']) * 100
+                    self.gcode.run_script_from_command(f"M220 S{speed_value}")
+                if 'extrude_factor' in speed:
+                    extrude_value = float(speed['extrude_factor']) * 100
+                    self.gcode.run_script_from_command(f"M221 S{extrude_value}")
+
+            # 8. 恢复风扇设置
+            if 'fans' in state_data:
+                fans = state_data['fans']
+                for fan_name, speed in fans.items():
+                    if fan_name == 'fan':
+                        self.gcode.run_script_from_command(f"M106 S{int(float(speed)*255)}")
+                    elif fan_name == 'hotend_fan':
+                        self.gcode.run_script_from_command(f"M106 P1 S{int(float(speed)*255)}")
+                    elif fan_name == 'nozzle_fan':
+                        self.gcode.run_script_from_command(f"M106 P2 S{int(float(speed)*255)}")
+
+            # 9. 开始打印
             logging.info("RESTORE_PRINT: Starting print")
             self.print_stats.note_start()
             self.work_timer = self.reactor.register_timer(
                 self.work_handler, self.reactor.NOW)
-            logging.info("RESTORE_PRINT: Print started, timer registered")
-            
-            # 9. 删除状态文件
+            logging.info("RESTORE_PRINT: Print started")
+
+            # 10. 删除状态文件
             if state_file:
                 try:
                     os.remove(state_file)
                     logging.info("RESTORE_PRINT: Removed state file")
                 except:
                     logging.exception("RESTORE_PRINT: Error removing state file")
-                
-        except:
+
+        except Exception as e:
             logging.exception("RESTORE_PRINT: Error during restore process")
-            raise gcmd.error("Failed to restore print")
-    def _load_file_by_path(self, gcmd, filepath):
-        try:
-            f = io.open(filepath, 'r', newline='')
-            f.seek(0, os.SEEK_END)
-            fsize = f.tell()
-            f.seek(0)
-        except:
-            logging.exception("virtual_sdcard file open")
-            raise gcmd.error("Unable to open file")
-        
-        gcmd.respond_raw("File opened:%s Size:%d" % (filepath, fsize))
-        gcmd.respond_raw("File selected")
-        self.current_file = f
-        self.file_position = 0
-        self.file_size = fsize
-        self.print_stats.set_current_file(filepath)
+            raise gcmd.error(f"Failed to restore print: {str(e)}")
 
 def load_config(config):
     return VirtualSD(config)
