@@ -450,40 +450,56 @@ class VirtualSD:
             file_position = int(print_state['file_position'])
             logging.info("RESTORE_PRINT: Found state - file: %s, position: %d", file_path, file_position)
             
-            # 关闭当前文件（如果有）
-            if self.current_file is not None:
-                self.current_file.close()
-                self.current_file = None
+            # 初始化打印机状态
+            self.gcode.run_script("M82")  # 设置绝对挤出
+            self.gcode.run_script("G90")  # 设置绝对坐标
+            self.gcode.run_script("M220 S100")  # 重置速度因子
+            self.gcode.run_script("M221 S100")  # 重置挤出因子
+            logging.info("RESTORE_PRINT: Initialized printer state")
             
             # 1. 先设置温度开始预热
             if 'temperatures' in state_data:
                 temps = state_data['temperatures']
-                if 'extruder' in temps:
-                    self.gcode.run_script(f"M104 S{float(temps['extruder'])}")
-                    logging.info("RESTORE_PRINT: Set extruder temp to %s", temps['extruder'])
-                if 'bed' in temps:
-                    self.gcode.run_script(f"M140 S{float(temps['bed'])}")
-                    logging.info("RESTORE_PRINT: Set bed temp to %s", temps['bed'])
+                try:
+                    if 'extruder' in temps:
+                        extruder_temp = float(temps['extruder'])
+                        self.gcode.run_script(f"M104 S{extruder_temp}")  # 使用M104而不是SET_HEATER_TEMPERATURE
+                        logging.info("RESTORE_PRINT: Set extruder temp to %.2f", extruder_temp)
+                    if 'bed' in temps:
+                        bed_temp = float(temps['bed'])
+                        self.gcode.run_script(f"M140 S{bed_temp}")  # 使用M140而不是SET_HEATER_TEMPERATURE
+                        logging.info("RESTORE_PRINT: Set bed temp to %.2f", bed_temp)
+                except Exception as e:
+                    logging.exception("RESTORE_PRINT: Error setting temperatures: %s", str(e))
             
             # 2. 执行回零操作
-            self.gcode.run_script("G28")
-            logging.info("RESTORE_PRINT: Homing completed")
+            try:
+                self.gcode.run_script("G28")
+                logging.info("RESTORE_PRINT: Homing completed")
+            except Exception as e:
+                logging.exception("RESTORE_PRINT: Error during homing: %s", str(e))
             
             # 3. 等待温度达到目标值
             if 'temperatures' in state_data:
                 temps = state_data['temperatures']
-                if 'extruder' in temps:
-                    self.gcode.run_script(f"M109 R{temps['extruder']}")
-                    logging.info("RESTORE_PRINT: Extruder temp reached")
-                if 'bed' in temps:
-                    self.gcode.run_script(f"M190 R{temps['bed']}")
-                    logging.info("RESTORE_PRINT: Bed temp reached")
+                try:
+                    if 'extruder' in temps:
+                        extruder_temp = float(temps['extruder'])
+                        self.gcode.run_script(f"M109 S{extruder_temp}")  # 使用M109而不是TEMPERATURE_WAIT
+                        logging.info("RESTORE_PRINT: Extruder temp reached %.2f", extruder_temp)
+                    if 'bed' in temps:
+                        bed_temp = float(temps['bed'])
+                        self.gcode.run_script(f"M190 S{bed_temp}")  # 使用M190而不是TEMPERATURE_WAIT
+                        logging.info("RESTORE_PRINT: Bed temp reached %.2f", bed_temp)
+                except Exception as e:
+                    logging.exception("RESTORE_PRINT: Error waiting for temperatures: %s", str(e))
             
             # 4. 加载文件
             logging.info("RESTORE_PRINT: Loading file: %s", file_path)
             self._load_file_by_path(gcmd, file_path)
             
             # 5. 设置文件位置
+            self.current_file.seek(file_position)
             self.file_position = file_position
             logging.info("RESTORE_PRINT: Set file position to %d", file_position)
             
@@ -492,12 +508,14 @@ class VirtualSD:
                 pos = state_data['position']
                 logging.info("RESTORE_PRINT: Restoring position - X:%s Y:%s Z:%s", 
                             pos['x'], pos['y'], pos['z'])
+                # 先提升Z轴
+                self.gcode.run_script("G1 Z50 F600")
                 # 移动到XY位置
                 self.gcode.run_script(f"G1 X{pos['x']} Y{pos['y']} F3000")
                 # 移动到Z位置
                 self.gcode.run_script(f"G1 Z{pos['z']} F600")
-                # 重置E位置
-                self.gcode.run_script("G92 E0")
+                # 设置E位置
+                self.gcode.run_script(f"G92 E{pos['e']}")
                 logging.info("RESTORE_PRINT: Position restored")
             
             # 7. 如果有速度信息，恢复速度
@@ -510,8 +528,6 @@ class VirtualSD:
             
             # 8. 开始打印
             logging.info("RESTORE_PRINT: Starting print")
-            self.current_file.seek(file_position)
-            self.file_position = file_position
             self.print_stats.note_start()
             self.work_timer = self.reactor.register_timer(
                 self.work_handler, self.reactor.NOW)
