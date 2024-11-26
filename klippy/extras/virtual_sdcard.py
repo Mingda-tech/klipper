@@ -329,22 +329,26 @@ class VirtualSD:
             'file_path': str(self.file_path()),
             'file_position': str(self.file_position),
             'file_size': str(self.file_size),
-            'progress': str(self.progress())
+            'progress': '{:.2f}'.format(self.progress())
         }
         
         # 获取打印机状态
         try:
             # 获取工具头对象和位置信息
-            toolhead = self.printer.lookup_object('toolhead')
-            current_pos = toolhead.get_position()
-            config['position'] = {
-                'x': str(current_pos[0]),
-                'y': str(current_pos[1]),
-                'z': str(current_pos[2]),
-                'e': str(current_pos[3])
-            }
+            gcode_move = self.printer.lookup_object('gcode_move')
+            
+            # 获取相对坐标
+            if gcode_move:
+                gcode_position = gcode_move.get_status(self.reactor.monotonic())['gcode_position']
+                config['position'] = {
+                    'x': '{:.2f}'.format(gcode_position[0]),
+                    'y': '{:.2f}'.format(gcode_position[1]),
+                    'z': '{:.2f}'.format(gcode_position[2]),
+                    'e': '{:.2f}'.format(gcode_position[3])
+                }
             
             # 从toolhead获取当前活跃挤出头信息
+            toolhead = self.printer.lookup_object('toolhead')
             if toolhead:
                 config['extruder'] = {}
                 active_extruder = toolhead.get_extruder().get_name()
@@ -357,28 +361,29 @@ class VirtualSD:
                 extruder = self.printer.lookup_object(extruder_name, None)
                 if extruder:
                     temp = extruder.get_status(self.reactor.monotonic())['temperature']
-                    config['temperatures'][extruder_name] = str(temp)
+                    config['temperatures'][extruder_name] = '{:.2f}'.format(temp)
                     
             # 获取热床温度
             heater_bed = self.printer.lookup_object('heater_bed', None)
             if heater_bed:
-                config['temperatures']['bed'] = str(heater_bed.get_status(self.reactor.monotonic())['temperature'])
+                temp = heater_bed.get_status(self.reactor.monotonic())['temperature']
+                config['temperatures']['bed'] = '{:.2f}'.format(temp)
             
             # 获取打印速度
-            gcode_move = self.printer.lookup_object('gcode_move')
             if gcode_move:
                 speed = gcode_move.get_status(self.reactor.monotonic())['speed']
                 speed_factor = gcode_move.get_status(self.reactor.monotonic())['speed_factor']
                 config['speed'] = {
-                    'speed': str(speed),
-                    'speed_factor': str(speed_factor)
+                    'speed': '{:.2f}'.format(speed),
+                    'speed_factor': '{:.2f}'.format(speed_factor)
                 }
             
             # 获取风扇速度
             fan = self.printer.lookup_object('fan', None)
             if fan:
+                speed = fan.get_status(self.reactor.monotonic())['speed']
                 config['fan'] = {
-                    'speed': str(fan.get_status(self.reactor.monotonic())['speed'])
+                    'speed': '{:.2f}'.format(speed)
                 }
                 
         except:
