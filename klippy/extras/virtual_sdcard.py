@@ -444,10 +444,8 @@ class VirtualSD:
             # 重置当前打印状态
             self._reset_file()
             
-            # 加载文件
-            if file_path.startswith('/'):
-                file_path = file_path[1:]
-            self._load_file(gcmd, file_path)
+            # 使用新函数加载文件
+            self._load_file_by_path(gcmd, file_path)
             
             # 设置文件位置
             self.file_position = file_position
@@ -491,6 +489,22 @@ class VirtualSD:
         except:
             logging.exception("Error restoring print")
             raise gcmd.error("Failed to restore print")
+    def _load_file_by_path(self, gcmd, filepath):
+        try:
+            f = io.open(filepath, 'r', newline='')
+            f.seek(0, os.SEEK_END)
+            fsize = f.tell()
+            f.seek(0)
+        except:
+            logging.exception("virtual_sdcard file open")
+            raise gcmd.error("Unable to open file")
+        
+        gcmd.respond_raw("File opened:%s Size:%d" % (filepath, fsize))
+        gcmd.respond_raw("File selected")
+        self.current_file = f
+        self.file_position = 0
+        self.file_size = fsize
+        self.print_stats.set_current_file(filepath)
 
 def load_config(config):
     return VirtualSD(config)
