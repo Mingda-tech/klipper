@@ -388,15 +388,17 @@ class VirtualSD:
                 extruder = self.printer.lookup_object(extruder_name, None)
                 if extruder:
                     status = extruder.get_status(self.reactor.monotonic())
-                    config['temperatures'][extruder_name] = '{:.2f}'.format(status['temperature'])
-                    config['temperatures'][f'{extruder_name}_target'] = '{:.2f}'.format(status['target'])
+                    # 只保存目标温度
+                    if status['target'] > 0:  # 只在有目标温度时保存
+                        config['temperatures'][extruder_name] = '{:.2f}'.format(status['target'])
                     
             # 获取热床温度
             heater_bed = self.printer.lookup_object('heater_bed', None)
             if heater_bed:
                 status = heater_bed.get_status(self.reactor.monotonic())
-                config['temperatures']['bed'] = '{:.2f}'.format(status['temperature'])
-                config['temperatures']['bed_target'] = '{:.2f}'.format(status['target'])
+                # 只保存目标温度
+                if status['target'] > 0:  # 只在有目标温度时保存
+                    config['temperatures']['bed'] = '{:.2f}'.format(status['target'])
             
             # 获取风扇速度
             config['fans'] = {}
