@@ -338,17 +338,32 @@ class VirtualSD:
         
         # 获取打印机状态
         try:
-            # 获取工具头对象和位置信息
+            # 获取gcode_move对象
             gcode_move = self.printer.lookup_object('gcode_move')
             
-            # 获取相对坐标
             if gcode_move:
-                gcode_position = gcode_move.get_status(self.reactor.monotonic())['gcode_position']
+                status = gcode_move.get_status(self.reactor.monotonic())
+                
+                # 获取相对坐标
+                gcode_position = status['gcode_position']
                 config['position'] = {
                     'x': '{:.2f}'.format(gcode_position[0]),
                     'y': '{:.2f}'.format(gcode_position[1]),
                     'z': '{:.2f}'.format(gcode_position[2]),
                     'e': '{:.2f}'.format(gcode_position[3])
+                }
+                
+                # 保存坐标模式
+                config['motion_mode'] = {
+                    'absolute_coordinates': str(status['absolute_coordinates']),
+                    'absolute_extrude': str(status['absolute_extrude'])
+                }
+                
+                # 保存速度和挤出相关设置
+                config['speed'] = {
+                    'speed': '{:.2f}'.format(status['speed']),
+                    'speed_factor': '{:.2f}'.format(status['speed_factor']),
+                    'extrude_factor': '{:.2f}'.format(status['extrude_factor'])
                 }
             
             # 从toolhead获取当前活跃挤出头信息
@@ -358,37 +373,45 @@ class VirtualSD:
                 active_extruder = toolhead.get_extruder().get_name()
                 config['extruder']['active_extruder'] = str(active_extruder)
                 
+                # 获取打印头最大速度和加速度
+                status = toolhead.get_status(self.reactor.monotonic())
+                config['motion_limits'] = {
+                    'max_velocity': '{:.2f}'.format(status['max_velocity']),
+                    'max_accel': '{:.2f}'.format(status['max_accel']),
+                    'square_corner_velocity': '{:.2f}'.format(status['square_corner_velocity'])
+                }
+                    
             # 获取所有挤出头温度
             config['temperatures'] = {}
             for i in range(2):  # 最多支持2个挤出头
                 extruder_name = 'extruder' if i == 0 else f'extruder{i}'
                 extruder = self.printer.lookup_object(extruder_name, None)
                 if extruder:
-                    temp = extruder.get_status(self.reactor.monotonic())['temperature']
-                    config['temperatures'][extruder_name] = '{:.2f}'.format(temp)
+                    status = extruder.get_status(self.reactor.monotonic())
+                    config['temperatures'][extruder_name] = '{:.2f}'.format(status['temperature'])
+                    config['temperatures'][f'{extruder_name}_target'] = '{:.2f}'.format(status['target'])
                     
             # 获取热床温度
             heater_bed = self.printer.lookup_object('heater_bed', None)
             if heater_bed:
-                temp = heater_bed.get_status(self.reactor.monotonic())['temperature']
-                config['temperatures']['bed'] = '{:.2f}'.format(temp)
-            
-            # 获取打印速度
-            if gcode_move:
-                speed = gcode_move.get_status(self.reactor.monotonic())['speed']
-                speed_factor = gcode_move.get_status(self.reactor.monotonic())['speed_factor']
-                config['speed'] = {
-                    'speed': '{:.2f}'.format(speed),
-                    'speed_factor': '{:.2f}'.format(speed_factor)
-                }
+                status = heater_bed.get_status(self.reactor.monotonic())
+                config['temperatures']['bed'] = '{:.2f}'.format(status['temperature'])
+                config['temperatures']['bed_target'] = '{:.2f}'.format(status['target'])
             
             # 获取风扇速度
+            config['fans'] = {}
+            # 主风扇
             fan = self.printer.lookup_object('fan', None)
             if fan:
-                speed = fan.get_status(self.reactor.monotonic())['speed']
-                config['fan'] = {
-                    'speed': '{:.2f}'.format(speed)
-                }
+                config['fans']['fan'] = '{:.2f}'.format(fan.get_status(self.reactor.monotonic())['speed'])
+            # 热端风扇
+            hotend_fan = self.printer.lookup_object('heater_fan Hotend_Fan0', None)
+            if hotend_fan:
+                config['fans']['hotend_fan'] = '{:.2f}'.format(hotend_fan.get_status(self.reactor.monotonic())['speed'])
+            # 模型风扇
+            nozzle_fan = self.printer.lookup_object('fan_generic Nozzle_Fan0', None)
+            if nozzle_fan:
+                config['fans']['nozzle_fan'] = '{:.2f}'.format(nozzle_fan.get_status(self.reactor.monotonic())['speed'])
                 
         except:
             logging.exception("Error getting printer state data")
