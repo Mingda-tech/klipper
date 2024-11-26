@@ -53,6 +53,10 @@ class VirtualSD:
         self.state_file_1 = os.path.join(config_path, 'print_state.cfg')
         self.state_file_2 = os.path.join(config_path, 'print_state_temp.cfg')
         self.last_saved_to_first = True
+        # 添加恢复打印命令
+        self.gcode.register_command(
+            "RESTORE_PRINT", self.cmd_RESTORE_PRINT,
+            desc=self.cmd_RESTORE_PRINT_help)
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -397,6 +401,96 @@ class VirtualSD:
             self.last_saved_to_first = not self.last_saved_to_first
         except:
             logging.exception("Error saving print state")
+    # 添加恢复打印的命令处理函数
+    cmd_RESTORE_PRINT_help = "Restore the previous print after power loss"
+    def cmd_RESTORE_PRINT(self, gcmd):
+        if self.work_timer is not None:
+            raise gcmd.error("Already printing")
+        
+        # 尝试读取两个状态文件
+        config = configparser.ConfigParser()
+        state_file = None
+        state_data = None
+        
+        try:
+            # 先尝试读取第一个文件
+            config.read(self.state_file_1)
+            if 'print_state' in config:
+                state_file = self.state_file_1
+                state_data = config
+        except:
+            logging.exception("Error reading first state file")
+        
+        if state_data is None:
+            try:
+                # 如果第一个文件无效，尝试读取第二个文件
+                config = configparser.ConfigParser()
+                config.read(self.state_file_2)
+                if 'print_state' in config:
+                    state_file = self.state_file_2
+                    state_data = config
+            except:
+                logging.exception("Error reading second state file")
+        
+        if state_data is None:
+            raise gcmd.error("No valid print state found")
+        
+        try:
+            # 获取打印状态
+            print_state = state_data['print_state']
+            file_path = print_state['file_path']
+            file_position = int(print_state['file_position'])
+            
+            # 重置当前打印状态
+            self._reset_file()
+            
+            # 加载文件
+            if file_path.startswith('/'):
+                file_path = file_path[1:]
+            self._load_file(gcmd, file_path)
+            
+            # 设置文件位置
+            self.file_position = file_position
+            
+            # 如果有温度信息，恢复温度
+            if 'temperatures' in state_data:
+                temps = state_data['temperatures']
+                if 'extruder' in temps:
+                    self.gcode.run_script(f"M104 S{float(temps['extruder'])}")
+                if 'bed' in temps:
+                    self.gcode.run_script(f"M140 S{float(temps['bed'])}")
+            
+            # 等待温度达到目标值
+            if 'temperatures' in state_data:
+                temps = state_data['temperatures']
+                if 'extruder' in temps or 'bed' in temps:
+                    self.gcode.run_script("M109 R" + temps['extruder'])
+                    self.gcode.run_script("M190 R" + temps['bed'])
+            
+            # 如果有位置信息，恢复位置
+            if 'position' in state_data:
+                pos = state_data['position']
+                self.gcode.run_script(f"G92 X{pos['x']} Y{pos['y']} Z{pos['z']} E{pos['e']}")
+            
+            # 如果有速度信息，恢复速度
+            if 'speed' in state_data:
+                speed = state_data['speed']
+                if 'speed_factor' in speed:
+                    self.gcode.run_script(f"M220 S{float(speed['speed_factor'])*100}")
+            
+            # 开始打印
+            self.do_resume()
+            
+            # 删除状态文件
+            if state_file:
+                try:
+                    os.remove(state_file)
+                except:
+                    logging.exception("Error removing state file")
+                
+        except:
+            logging.exception("Error restoring print")
+            raise gcmd.error("Failed to restore print")
 
 def load_config(config):
     return VirtualSD(config)
