@@ -522,14 +522,22 @@ class VirtualSD:
             # 6. 恢复位置
             if 'position' in state_data:
                 pos = state_data['position']
-                self.gcode.run_script_from_command(f"G92 X{pos['x']} Y{pos['y']} Z{pos['z']} E{pos['e']}")
-                logging.info("RESTORE_PRINT: Position restored")
+                # 设置绝对坐标模式
+                self.gcode.run_script_from_command("G90")
+                # 先移动到Z轴位置
+                self.gcode.run_script_from_command(f"G1 Z{pos['z']} F600")
+                # 移动到XY位置
+                self.gcode.run_script_from_command(f"G1 X{pos['x']} Y{pos['y']} F3000")
+                # 先设置E轴位置为0
+                self.gcode.run_script_from_command("G92 E0")
+                logging.info("RESTORE_PRINT: Position restored to X:%.2f Y:%.2f Z:%.2f E:%.2f", 
+                           float(pos['x']), float(pos['y']), float(pos['z']), float(pos['e']))
 
             # 7. 恢复速度设置
             if 'speed' in state_data:
                 speed = state_data['speed']
                 if 'speed_factor' in speed:
-                    speed_value = float(speed['speed_factor']) * 100
+                    speed_value = float(speed['speed_factor']) * 50
                     self.gcode.run_script_from_command(f"M220 S{speed_value}")
                 if 'extrude_factor' in speed:
                     extrude_value = float(speed['extrude_factor']) * 100
@@ -539,12 +547,8 @@ class VirtualSD:
             if 'fans' in state_data:
                 fans = state_data['fans']
                 for fan_name, speed in fans.items():
-                    if fan_name == 'fan':
+                    if fan_name == 'nozzle_fan':
                         self.gcode.run_script_from_command(f"M106 S{int(float(speed)*255)}")
-                    elif fan_name == 'hotend_fan':
-                        self.gcode.run_script_from_command(f"M106 P1 S{int(float(speed)*255)}")
-                    elif fan_name == 'nozzle_fan':
-                        self.gcode.run_script_from_command(f"M106 P2 S{int(float(speed)*255)}")
 
             # 9. 开始打印
             logging.info("RESTORE_PRINT: Starting print")
