@@ -186,8 +186,8 @@ class LookAheadQueue:
             # Enough moves have been queued to reach the target flush time.
             self.flush(lazy=True)
 
-BUFFER_TIME_LOW = 1.0
-BUFFER_TIME_HIGH = 2.0
+BUFFER_TIME_LOW = 2.0
+BUFFER_TIME_HIGH = 4.0
 BUFFER_TIME_START = 0.250
 BGFLUSH_LOW_TIME = 0.200
 BGFLUSH_BATCH_TIME = 0.200
