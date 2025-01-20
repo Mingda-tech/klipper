@@ -94,6 +94,11 @@ class AutoExtruderSwitch:
                                           self._handle_paused)
         self.printer.register_event_handler('pause_resume:resumed', 
                                           self._handle_resumed)
+        
+        # 设置传感器状态检查定时器
+        self.sensor_check_timer = self.reactor.register_timer(
+            self._check_sensor_state)
+        self.reactor.update_timer(self.sensor_check_timer, self.reactor.NOW)
             
     def _handle_paused(self):
         self.is_paused = True
@@ -124,8 +129,8 @@ class AutoExtruderSwitch:
             extruder1_temp = gcmd.get_float('EXTRUDER1', 0)
             
             # 如果只设置了右打印头温度，标记为右头打印
-            self.right_head_only = (extruder1_temp > 0 and extruder_temp == 0)
-            self.left_head_only = (extruder_temp > 0 and extruder1_temp == 0)
+            self.right_head_only = (extruder1_temp > 150 and extruder_temp < 150)
+            self.left_head_only = (extruder_temp > 150 and extruder1_temp < 150)
             
             # 执行原始的 START_PRINT 命令
             if self.original_start_print is not None:
@@ -202,24 +207,30 @@ class AutoExtruderSwitch:
         
         # 获取当前打印头的温度
         cur_temp = self.printer[cur_extruder_name].target
+        other_temp = self.printer[other_extruder_name].target
+        
+        # 如果另一个打印头温度太低，先预热
+        if other_temp < cur_temp - 30:  # 允许30度的温差
+            logging.info("预热打印头 %s 到 %.1f", other_extruder_name, cur_temp)
+            if other_extruder_name == 'extruder':
+                self.gcode.run_script_from_command("M104 T0 S%.1f" % cur_temp)
+            else:
+                self.gcode.run_script_from_command("M104 T1 S%.1f" % cur_temp)
+            # 等待预热完成
+            if other_extruder_name == 'extruder':
+                self.gcode.run_script_from_command("M109 T0 S%.1f" % cur_temp)
+            else:
+                self.gcode.run_script_from_command("M109 T1 S%.1f" % cur_temp)
         
         # Switch to other extruder
         if other_extruder_name == 'extruder':
-            # 设置左头温度为当前温度
-            self.gcode.run_script_from_command("M104 T0 S%.1f" % cur_temp)
             # 切换到左头
             self.gcode.run_script_from_command("T0")
-            # 等待温度达到目标值
-            self.gcode.run_script_from_command("M109 T0 S%.1f" % cur_temp)
             # 恢复打印头状态
             self._restore_state_to_extruder('extruder')
         else:
-            # 设置右头温度为当前温度
-            self.gcode.run_script_from_command("M104 T1 S%.1f" % cur_temp)
             # 切换到右头
             self.gcode.run_script_from_command("T1")
-            # 等待温度达到目标值
-            self.gcode.run_script_from_command("M109 T1 S%.1f" % cur_temp)
             # 恢复打印头状态
             self._restore_state_to_extruder('extruder1')
             
@@ -228,6 +239,28 @@ class AutoExtruderSwitch:
         # 恢复打印 - 让RESUME宏处理料丝检查和其他恢复操作
         self.gcode.run_script_from_command("RESUME VELOCITY=30")
         return eventtime + 1.
+        
+    def _check_sensor_state(self, eventtime):
+        """定期检查传感器状态"""
+        if not self.auto_switch_enabled:
+            return eventtime + 1.
+
+        # 获取当前打印头
+        cur_extruder = self.toolhead.get_extruder()
+        cur_extruder_name = cur_extruder.get_name()
+        
+        # 根据当前打印头选择对应的传感器
+        cur_sensor = self.sensor0 if cur_extruder_name == 'extruder' else self.sensor1
+        
+        # 检查是否断料
+        if cur_sensor and not cur_sensor.get_status(eventtime)['filament_detected']:
+            if not self.is_paused:  # 避免重复触发
+                self.is_paused = True
+                logging.info("检测到断料，设置暂停状态，auto_switch_enabled=%s", self.auto_switch_enabled)
+                # 触发自动切换检查
+                self.reactor.update_timer(self.check_timer, self.reactor.NOW)
+        
+        return eventtime + 0.5  # 每0.5秒检查一次
         
     cmd_ENABLE_AUTO_EXTRUDER_SWITCH_help = "Enable automatic extruder switching"
     def cmd_ENABLE_AUTO_EXTRUDER_SWITCH(self, gcmd):
