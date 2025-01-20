@@ -31,9 +31,10 @@ class AutoExtruderSwitch:
         self.gcode.register_command(
             'DISABLE_AUTO_EXTRUDER_SWITCH', self.cmd_DISABLE_AUTO_EXTRUDER_SWITCH,
             desc=self.cmd_DISABLE_AUTO_EXTRUDER_SWITCH_help)
-        self.gcode.register_command(
-            'START_PRINT', self.cmd_START_PRINT,
-            desc=self.cmd_START_PRINT_help)
+            
+        # Register gcode handler
+        self.gcode.register_command('START_PRINT', None)
+        self.gcode.register_command('START_PRINT', self._handle_gcode_command)
             
         # Register event handlers
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -112,18 +113,21 @@ class AutoExtruderSwitch:
         self.right_head_only = False  # 重置右头标志
         self.left_head_only = False  # 重置左头标志
 
-    cmd_START_PRINT_help = "Start the print with specified temperatures"
-    def cmd_START_PRINT(self, gcmd):
-        # 检查打印头温度设置
-        extruder_temp = gcmd.get_float('EXTRUDER', 0)
-        extruder1_temp = gcmd.get_float('EXTRUDER1', 0)
-        
-        # 如果只设置了右打印头温度，标记为右头打印
-        self.right_head_only = (extruder1_temp > 0 and extruder_temp == 0)
-        self.left_head_only = (extruder_temp > 0 and extruder1_temp == 0)
-        # 转发原始命令
-        self.gcode.run_script_from_command(gcmd.get_raw_command_parameters())
-        
+    def _handle_gcode_command(self, gcmd):
+        cmd = gcmd.get_command()
+        if cmd == 'START_PRINT':
+            # 检查打印头温度设置
+            extruder_temp = gcmd.get_float('EXTRUDER', 0)
+            extruder1_temp = gcmd.get_float('EXTRUDER1', 0)
+            
+            # 如果只设置了右打印头温度，标记为右头打印
+            self.right_head_only = (extruder1_temp > 0 and extruder_temp == 0)
+            self.left_head_only = (extruder_temp > 0 and extruder1_temp == 0)
+            
+            # 执行原始的 START_PRINT 宏
+            gcode_macro = self.printer.lookup_object('gcode_macro START_PRINT')
+            gcode_macro.cmd_START_PRINT(gcmd)
+
     def _is_single_extruder_print(self):
         # 1. 如果只设置了右头温度，则为单头打印
         if self.right_head_only:
