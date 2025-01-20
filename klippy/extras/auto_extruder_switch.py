@@ -16,6 +16,14 @@ class AutoExtruderSwitch:
         self.right_head_only = False  # 是否只使用右打印头
         self.left_head_only = False  # 是否只使用左打印头
         
+        # 保存打印状态
+        self.saved_state = {
+            'speed_factor': 1.0,  # M220
+            'extrude_factor': 1.0,  # M221
+            'pressure_advance': 0.0,
+            'smooth_time': 0.0
+        }
+        
         # Register commands
         self.gcode.register_command(
             'ENABLE_AUTO_EXTRUDER_SWITCH', self.cmd_ENABLE_AUTO_EXTRUDER_SWITCH,
@@ -40,16 +48,45 @@ class AutoExtruderSwitch:
         self.check_timer = self.reactor.register_timer(
             self._check_conditions)
             
+    def _save_current_state(self):
+        """保存当前打印头的状态"""
+        gcode_move = self.printer.lookup_object('gcode_move')
+        cur_extruder = self.toolhead.get_extruder()
+        
+        # 保存速度和流量比例
+        self.saved_state['speed_factor'] = gcode_move.speed_factor
+        self.saved_state['extrude_factor'] = gcode_move.extrude_factor
+        
+        # 保存压力提前
+        if hasattr(cur_extruder, 'pressure_advance'):
+            self.saved_state['pressure_advance'] = cur_extruder.pressure_advance
+            self.saved_state['smooth_time'] = cur_extruder.pressure_advance_smooth_time
+            
+    def _restore_state_to_extruder(self, extruder_name):
+        """将保存的状态恢复到指定打印头"""
+        gcode_move = self.printer.lookup_object('gcode_move')
+        
+        # 恢复速度和流量比例
+        self.gcode.run_script_from_command(
+            "M220 S%.0f" % (self.saved_state['speed_factor'] * 100.))
+        self.gcode.run_script_from_command(
+            "M221 S%.0f" % (self.saved_state['extrude_factor'] * 100.))
+            
+        # 恢复压力提前
+        self.gcode.run_script_from_command(
+            "SET_PRESSURE_ADVANCE EXTRUDER=%s ADVANCE=%.4f SMOOTH_TIME=%.4f" % 
+            (extruder_name, self.saved_state['pressure_advance'], 
+             self.saved_state['smooth_time']))
+            
     def _handle_ready(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         self.pause_resume = self.printer.lookup_object('pause_resume')
         self.dual_carriage = self.printer.lookup_object('dual_carriage', None)
-        self.filament_switch_sensors = []
         
-        # Find all filament sensors
-        for name in self.printer.lookup_objects('filament_switch_sensor'):
-            self.filament_switch_sensors.append(name[1])
-            
+        # 获取料丝传感器
+        self.sensor0 = self.printer.lookup_object('filament_switch_sensor Filament_Sensor0', None)
+        self.sensor1 = self.printer.lookup_object('filament_switch_sensor Filament_Sensor1', None)
+        
         # 监听暂停状态变化
         self.printer.register_event_handler('pause_resume:paused', 
                                           self._handle_paused)
@@ -122,38 +159,48 @@ class AutoExtruderSwitch:
         cur_extruder = self.toolhead.get_extruder()
         cur_extruder_name = cur_extruder.get_name()
         
-        # Check if current extruder has no filament
-        cur_sensor = None
-        for sensor in self.filament_switch_sensors:
-            if sensor.name == cur_extruder_name:
-                cur_sensor = sensor
-                break
+        # 根据当前打印头选择对应的传感器
+        cur_sensor = self.sensor0 if cur_extruder_name == 'extruder' else self.sensor1
+        other_sensor = self.sensor1 if cur_extruder_name == 'extruder' else self.sensor0
+        other_extruder_name = 'extruder1' if cur_extruder_name == 'extruder' else 'extruder'
                 
-        if cur_sensor is None or cur_sensor.filament_present:
+        if cur_sensor is None or cur_sensor.filament_detected:
             return eventtime + 1.
             
-        # Find another extruder with filament
-        extruders = []
-        for name in self.printer.lookup_objects('extruder'):
-            if name[0] != 'extruder_stepper':
-                extruders.append(name[1])
-                
-        for extruder in extruders:
-            if extruder.get_name() == cur_extruder_name:
-                continue
-                
-            # Check if this extruder has filament
-            for sensor in self.filament_switch_sensors:
-                if sensor.name == extruder.get_name() and sensor.filament_present:
-                    # Switch to this extruder using T0/T1 command
-                    if extruder.get_name() == 'extruder':
-                        self.gcode.run_script_from_command("T0")
-                    else:
-                        self.gcode.run_script_from_command("T1")
-                    # 恢复打印
-                    self.gcode.run_script_from_command("RESUME")
-                    return eventtime + 1.
-                    
+        # 检查另一个打印头是否有料
+        if other_sensor is None or not other_sensor.filament_detected:
+            return eventtime + 1.
+            
+        # 保存当前打印头状态
+        self._save_current_state()
+        
+        # 获取当前打印头的温度
+        cur_temp = self.printer[cur_extruder_name].target
+        
+        # Switch to other extruder
+        if other_extruder_name == 'extruder':
+            # 设置左头温度为当前温度
+            self.gcode.run_script_from_command("M104 T0 S%.1f" % cur_temp)
+            # 切换到左头
+            self.gcode.run_script_from_command("T0")
+            # 等待温度达到目标值
+            self.gcode.run_script_from_command("M109 T0 S%.1f" % cur_temp)
+            # 恢复打印头状态
+            self._restore_state_to_extruder('extruder')
+        else:
+            # 设置右头温度为当前温度
+            self.gcode.run_script_from_command("M104 T1 S%.1f" % cur_temp)
+            # 切换到右头
+            self.gcode.run_script_from_command("T1")
+            # 等待温度达到目标值
+            self.gcode.run_script_from_command("M109 T1 S%.1f" % cur_temp)
+            # 恢复打印头状态
+            self._restore_state_to_extruder('extruder1')
+            
+        # 等待一小段时间确保切换完成
+        self.toolhead.dwell(0.5)
+        # 恢复打印 - 让RESUME宏处理料丝检查和其他恢复操作
+        self.gcode.run_script_from_command("RESUME VELOCITY=30")
         return eventtime + 1.
         
     cmd_ENABLE_AUTO_EXTRUDER_SWITCH_help = "Enable automatic extruder switching"
