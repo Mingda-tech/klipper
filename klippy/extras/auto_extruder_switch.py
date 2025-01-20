@@ -162,16 +162,20 @@ class AutoExtruderSwitch:
         self._save_current_state()
         
         # 获取当前打印头的温度
-        cur_temp = self.printer[cur_extruder_name].target
-        other_temp = self.printer[other_extruder_name].target
+        cur_heater = self.printer.lookup_object(cur_extruder_name)
+        other_heater = self.printer.lookup_object(other_extruder_name)
+        cur_temp = cur_heater.get_status(self.reactor.monotonic())['target']
+        other_temp = other_heater.get_status(self.reactor.monotonic())['target']
         
         # 如果另一个打印头温度太低，先预热
         if other_temp < cur_temp - 30:  # 允许30度的温差
             gcmd.respond_info("预热打印头 %s 到 %.1f" % (other_extruder_name, cur_temp))
             if other_extruder_name == 'extruder':
                 self.gcode.run_script_from_command("M104 T0 S%.1f" % cur_temp)
+                self.gcode.run_script_from_command("M104 T1 S0")
             else:
                 self.gcode.run_script_from_command("M104 T1 S%.1f" % cur_temp)
+                self.gcode.run_script_from_command("M104 T0 S0")
             # 等待预热完成
             if other_extruder_name == 'extruder':
                 self.gcode.run_script_from_command("M109 T0 S%.1f" % cur_temp)
