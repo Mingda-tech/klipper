@@ -145,9 +145,11 @@ class AutoExtruderSwitch:
             # Check if this extruder has filament
             for sensor in self.filament_switch_sensors:
                 if sensor.name == extruder.get_name() and sensor.filament_present:
-                    # Switch to this extruder
-                    self.gcode.run_script_from_command(
-                        "ACTIVATE_EXTRUDER EXTRUDER=%s" % (extruder.get_name(),))
+                    # Switch to this extruder using T0/T1 command
+                    if extruder.get_name() == 'extruder':
+                        self.gcode.run_script_from_command("T0")
+                    else:
+                        self.gcode.run_script_from_command("T1")
                     # 恢复打印
                     self.gcode.run_script_from_command("RESUME")
                     return eventtime + 1.
