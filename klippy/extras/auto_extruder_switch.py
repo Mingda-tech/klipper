@@ -31,6 +31,9 @@ class AutoExtruderSwitch:
         self.gcode.register_command(
             'DISABLE_AUTO_EXTRUDER_SWITCH', self.cmd_DISABLE_AUTO_EXTRUDER_SWITCH,
             desc=self.cmd_DISABLE_AUTO_EXTRUDER_SWITCH_help)
+        self.gcode.register_command(
+            'CHECK_AND_SWITCH_EXTRUDER', self.cmd_CHECK_AND_SWITCH_EXTRUDER,
+            desc=self.cmd_CHECK_AND_SWITCH_EXTRUDER_help)
             
         # Register START_PRINT wrapper
         self.original_start_print = self.gcode.register_command('START_PRINT', None)
@@ -39,17 +42,16 @@ class AutoExtruderSwitch:
             
         # Register event handlers
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
-        self.printer.register_event_handler("idle_timeout:printing", 
-                                          self._handle_printing)
-        self.printer.register_event_handler("idle_timeout:ready",
-                                          self._handle_not_printing)
-        self.printer.register_event_handler("idle_timeout:idle",
-                                          self._handle_not_printing)
-                                          
-        # Setup timer for checking conditions
-        self.check_timer = self.reactor.register_timer(
-            self._check_conditions)
-            
+        
+    def _handle_ready(self):
+        self.toolhead = self.printer.lookup_object('toolhead')
+        self.pause_resume = self.printer.lookup_object('pause_resume')
+        self.dual_carriage = self.printer.lookup_object('dual_carriage', None)
+        
+        # 获取料丝传感器
+        self.sensor0 = self.printer.lookup_object('filament_switch_sensor Filament_Sensor0', None)
+        self.sensor1 = self.printer.lookup_object('filament_switch_sensor Filament_Sensor1', None)
+        
     def _save_current_state(self):
         """保存当前打印头的状态"""
         gcode_move = self.printer.lookup_object('gcode_move')
@@ -79,63 +81,7 @@ class AutoExtruderSwitch:
             "SET_PRESSURE_ADVANCE EXTRUDER=%s ADVANCE=%.4f SMOOTH_TIME=%.4f" % 
             (extruder_name, self.saved_state['pressure_advance'], 
              self.saved_state['smooth_time']))
-            
-    def _handle_ready(self):
-        self.toolhead = self.printer.lookup_object('toolhead')
-        self.pause_resume = self.printer.lookup_object('pause_resume')
-        self.dual_carriage = self.printer.lookup_object('dual_carriage', None)
-        
-        # 获取料丝传感器
-        self.sensor0 = self.printer.lookup_object('filament_switch_sensor Filament_Sensor0', None)
-        self.sensor1 = self.printer.lookup_object('filament_switch_sensor Filament_Sensor1', None)
-        
-        # 监听暂停状态变化
-        self.printer.register_event_handler('pause_resume:paused', 
-                                          self._handle_paused)
-        self.printer.register_event_handler('pause_resume:resumed', 
-                                          self._handle_resumed)
-        
-        # 设置传感器状态检查定时器
-        self.sensor_check_timer = self.reactor.register_timer(
-            self._check_sensor_state)
-        self.reactor.update_timer(self.sensor_check_timer, self.reactor.NOW)
-            
-    def _handle_paused(self):
-        self.is_paused = True
-        logging.info("打印已暂停，auto_switch_enabled=%s", self.auto_switch_enabled)
-        # 如果启用了自动切换，立即检查是否需要切换
-        if self.auto_switch_enabled:
-            logging.info("触发自动切换检查")
-            self.reactor.update_timer(self.check_timer, self.reactor.NOW)
-            
-    def _handle_resumed(self):
-        self.is_paused = False
-            
-    def _handle_printing(self, print_time):
-        if self.auto_switch_enabled:
-            self.reactor.update_timer(self.check_timer, self.reactor.NOW)
-            
-    def _handle_not_printing(self, print_time):
-        self.reactor.update_timer(self.check_timer, self.reactor.NEVER)
-        self.is_paused = False
-        self.right_head_only = False  # 重置右头标志
-        self.left_head_only = False  # 重置左头标志
-
-    def _handle_gcode_command(self, gcmd):
-        cmd = gcmd.get_command()
-        if cmd == 'START_PRINT':
-            # 检查打印头温度设置
-            extruder_temp = gcmd.get_float('EXTRUDER', 0)
-            extruder1_temp = gcmd.get_float('EXTRUDER1', 0)
-            
-            # 如果只设置了右打印头温度，标记为右头打印
-            self.right_head_only = (extruder1_temp > 150 and extruder_temp < 150)
-            self.left_head_only = (extruder_temp > 150 and extruder1_temp < 150)
-            
-            # 执行原始的 START_PRINT 命令
-            if self.original_start_print is not None:
-                self.original_start_print(gcmd)
-
+             
     def _is_single_extruder_print(self):
         # 1. 如果只设置了右头温度，则为单头打印
         if self.right_head_only:
@@ -155,52 +101,62 @@ class AutoExtruderSwitch:
             
         return False
         
-    def _check_conditions(self, eventtime):
+    def _handle_gcode_command(self, gcmd):
+        cmd = gcmd.get_command()
+        if cmd == 'START_PRINT':
+            # 检查打印头温度设置
+            extruder_temp = gcmd.get_float('EXTRUDER', 0)
+            extruder1_temp = gcmd.get_float('EXTRUDER1', 0)
+            
+            # 如果只设置了右打印头温度，标记为右头打印
+            self.right_head_only = (extruder1_temp > 150 and extruder_temp < 150)
+            self.left_head_only = (extruder_temp > 150 and extruder1_temp < 150)
+            
+            # 执行原始的 START_PRINT 命令
+            if self.original_start_print is not None:
+                self.original_start_print(gcmd)
+                
+    cmd_CHECK_AND_SWITCH_EXTRUDER_help = "检查并切换打印头（如果需要）"
+    def cmd_CHECK_AND_SWITCH_EXTRUDER(self, gcmd):
         if not self.auto_switch_enabled:
-            logging.info("自动切换未启用")
-            return self.reactor.NEVER
+            gcmd.respond_info("自动切换未启用")
+            return
             
         # 如果不是单头打印，不执行自动切换
         if not self._is_single_extruder_print():
-            logging.info("不是单头打印模式，跳过自动切换")
-            return eventtime + 1.
-            
-        # 如果没有暂停，不执行切换
-        if not self.is_paused:
-            logging.info("打印未暂停，跳过自动切换")
-            return eventtime + 1.
+            gcmd.respond_info("不是单头打印模式，跳过自动切换")
+            return
             
         # Get current extruder
         cur_extruder = self.toolhead.get_extruder()
         cur_extruder_name = cur_extruder.get_name()
-        logging.info("当前打印头: %s", cur_extruder_name)
         
         # 根据当前打印头选择对应的传感器
         cur_sensor = self.sensor0 if cur_extruder_name == 'extruder' else self.sensor1
         other_sensor = self.sensor1 if cur_extruder_name == 'extruder' else self.sensor0
         other_extruder_name = 'extruder1' if cur_extruder_name == 'extruder' else 'extruder'
         
-        logging.info("当前传感器状态: %s, 另一个传感器状态: %s", 
-                    "有料" if cur_sensor and cur_sensor.filament_detected else "无料",
-                    "有料" if other_sensor and other_sensor.filament_detected else "无料")
-                
         if cur_sensor is None:
-            logging.info("当前传感器未配置")
-            return eventtime + 1.
-            
-        if cur_sensor.filament_detected:
-            logging.info("当前打印头有料，不需要切换")
-            return eventtime + 1.
+            gcmd.respond_info("当前传感器未配置")
+            return
             
         if other_sensor is None:
-            logging.info("另一个传感器未配置")
-            return eventtime + 1.
+            gcmd.respond_info("另一个传感器未配置")
+            return
             
-        if not other_sensor.filament_detected:
-            logging.info("另一个打印头也无料，无法切换")
-            return eventtime + 1.
+        # 获取传感器状态
+        cur_status = cur_sensor.get_status(self.reactor.monotonic())
+        other_status = other_sensor.get_status(self.reactor.monotonic())
+        
+        if cur_status['filament_detected']:
+            gcmd.respond_info("当前打印头有料，不需要切换")
+            return
             
-        logging.info("开始执行自动切换到打印头: %s", other_extruder_name)
+        if not other_status['filament_detected']:
+            gcmd.respond_info("另一个打印头也无料，无法切换")
+            return
+            
+        gcmd.respond_info("开始执行自动切换到打印头: %s" % other_extruder_name)
         
         # 保存当前打印头状态
         self._save_current_state()
@@ -211,7 +167,7 @@ class AutoExtruderSwitch:
         
         # 如果另一个打印头温度太低，先预热
         if other_temp < cur_temp - 30:  # 允许30度的温差
-            logging.info("预热打印头 %s 到 %.1f", other_extruder_name, cur_temp)
+            gcmd.respond_info("预热打印头 %s 到 %.1f" % (other_extruder_name, cur_temp))
             if other_extruder_name == 'extruder':
                 self.gcode.run_script_from_command("M104 T0 S%.1f" % cur_temp)
             else:
@@ -236,31 +192,8 @@ class AutoExtruderSwitch:
             
         # 等待一小段时间确保切换完成
         self.toolhead.dwell(0.5)
-        # 恢复打印 - 让RESUME宏处理料丝检查和其他恢复操作
+        # 恢复打印
         self.gcode.run_script_from_command("RESUME VELOCITY=30")
-        return eventtime + 1.
-        
-    def _check_sensor_state(self, eventtime):
-        """定期检查传感器状态"""
-        if not self.auto_switch_enabled:
-            return eventtime + 1.
-
-        # 获取当前打印头
-        cur_extruder = self.toolhead.get_extruder()
-        cur_extruder_name = cur_extruder.get_name()
-        
-        # 根据当前打印头选择对应的传感器
-        cur_sensor = self.sensor0 if cur_extruder_name == 'extruder' else self.sensor1
-        
-        # 检查是否断料
-        if cur_sensor and not cur_sensor.get_status(eventtime)['filament_detected']:
-            if not self.is_paused:  # 避免重复触发
-                self.is_paused = True
-                logging.info("检测到断料，设置暂停状态，auto_switch_enabled=%s", self.auto_switch_enabled)
-                # 触发自动切换检查
-                self.reactor.update_timer(self.check_timer, self.reactor.NOW)
-        
-        return eventtime + 0.5  # 每0.5秒检查一次
         
     cmd_ENABLE_AUTO_EXTRUDER_SWITCH_help = "Enable automatic extruder switching"
     def cmd_ENABLE_AUTO_EXTRUDER_SWITCH(self, gcmd):
@@ -269,7 +202,6 @@ class AutoExtruderSwitch:
             return
             
         self.auto_switch_enabled = True
-        self.reactor.update_timer(self.check_timer, self.reactor.NOW)
         gcmd.respond_info("Auto extruder switch enabled")
         
     cmd_DISABLE_AUTO_EXTRUDER_SWITCH_help = "Disable automatic extruder switching"
@@ -279,7 +211,6 @@ class AutoExtruderSwitch:
             return
             
         self.auto_switch_enabled = False
-        self.reactor.update_timer(self.check_timer, self.reactor.NEVER)
         gcmd.respond_info("Auto extruder switch disabled")
 
 def load_config(config):
