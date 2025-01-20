@@ -97,8 +97,10 @@ class AutoExtruderSwitch:
             
     def _handle_paused(self):
         self.is_paused = True
+        logging.info("打印已暂停，auto_switch_enabled=%s", self.auto_switch_enabled)
         # 如果启用了自动切换，立即检查是否需要切换
         if self.auto_switch_enabled:
+            logging.info("触发自动切换检查")
             self.reactor.update_timer(self.check_timer, self.reactor.NOW)
             
     def _handle_resumed(self):
@@ -150,32 +152,51 @@ class AutoExtruderSwitch:
         
     def _check_conditions(self, eventtime):
         if not self.auto_switch_enabled:
+            logging.info("自动切换未启用")
             return self.reactor.NEVER
             
         # 如果不是单头打印，不执行自动切换
         if not self._is_single_extruder_print():
+            logging.info("不是单头打印模式，跳过自动切换")
             return eventtime + 1.
             
         # 如果没有暂停，不执行切换
         if not self.is_paused:
+            logging.info("打印未暂停，跳过自动切换")
             return eventtime + 1.
             
         # Get current extruder
         cur_extruder = self.toolhead.get_extruder()
         cur_extruder_name = cur_extruder.get_name()
+        logging.info("当前打印头: %s", cur_extruder_name)
         
         # 根据当前打印头选择对应的传感器
         cur_sensor = self.sensor0 if cur_extruder_name == 'extruder' else self.sensor1
         other_sensor = self.sensor1 if cur_extruder_name == 'extruder' else self.sensor0
         other_extruder_name = 'extruder1' if cur_extruder_name == 'extruder' else 'extruder'
+        
+        logging.info("当前传感器状态: %s, 另一个传感器状态: %s", 
+                    "有料" if cur_sensor and cur_sensor.filament_detected else "无料",
+                    "有料" if other_sensor and other_sensor.filament_detected else "无料")
                 
-        if cur_sensor is None or cur_sensor.filament_detected:
+        if cur_sensor is None:
+            logging.info("当前传感器未配置")
             return eventtime + 1.
             
-        # 检查另一个打印头是否有料
-        if other_sensor is None or not other_sensor.filament_detected:
+        if cur_sensor.filament_detected:
+            logging.info("当前打印头有料，不需要切换")
             return eventtime + 1.
             
+        if other_sensor is None:
+            logging.info("另一个传感器未配置")
+            return eventtime + 1.
+            
+        if not other_sensor.filament_detected:
+            logging.info("另一个打印头也无料，无法切换")
+            return eventtime + 1.
+            
+        logging.info("开始执行自动切换到打印头: %s", other_extruder_name)
+        
         # 保存当前打印头状态
         self._save_current_state()
         
