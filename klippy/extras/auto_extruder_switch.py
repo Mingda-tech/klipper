@@ -32,9 +32,10 @@ class AutoExtruderSwitch:
             'DISABLE_AUTO_EXTRUDER_SWITCH', self.cmd_DISABLE_AUTO_EXTRUDER_SWITCH,
             desc=self.cmd_DISABLE_AUTO_EXTRUDER_SWITCH_help)
             
-        # Register gcode handler
-        self.gcode.register_command('START_PRINT', None)
-        self.gcode.register_command('START_PRINT', self._handle_gcode_command)
+        # Register START_PRINT wrapper
+        self.original_start_print = self.gcode.register_command('START_PRINT', None)
+        if self.original_start_print is not None:
+            self.gcode.register_command('START_PRINT', self._handle_gcode_command)
             
         # Register event handlers
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
@@ -124,12 +125,9 @@ class AutoExtruderSwitch:
             self.right_head_only = (extruder1_temp > 0 and extruder_temp == 0)
             self.left_head_only = (extruder_temp > 0 and extruder1_temp == 0)
             
-            # 执行原始的 START_PRINT 宏
-            try:
-                self.gcode.run_script_from_command(gcmd.get_raw_command())
-            except Exception as e:
-                logging.exception("Error running START_PRINT macro")
-                raise
+            # 执行原始的 START_PRINT 命令
+            if self.original_start_print is not None:
+                self.original_start_print(gcmd)
 
     def _is_single_extruder_print(self):
         # 1. 如果只设置了右头温度，则为单头打印
