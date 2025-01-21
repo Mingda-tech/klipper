@@ -202,7 +202,7 @@ class AutoExtruderSwitch:
         self.gcode.run_script_from_command("G92 E0")  # 重置挤出机位置
         
         # 恢复打印
-        self.gcode.run_script_from_command("RESUME VELOCITY=30")
+        # self.gcode.run_script_from_command("RESUME VELOCITY=30")
         
     cmd_ENABLE_AUTO_EXTRUDER_SWITCH_help = "Enable automatic extruder switching"
     def cmd_ENABLE_AUTO_EXTRUDER_SWITCH(self, gcmd):
