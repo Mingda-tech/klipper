@@ -189,12 +189,11 @@ class AutoExtruderSwitch:
         # Switch to other extruder
         if other_extruder_name == 'extruder':
             # 切换到左头
-            # 保存当前位置
             gcmd.respond_info("准备切换到左头")
             self.gcode.run_script_from_command("G91")  # 切换到相对模式
             self.gcode.run_script_from_command("G1 Z2")  # 抬高一点避免碰撞
             self.gcode.run_script_from_command("G90")  # 切换回绝对模式
-            self.gcode.run_script_from_command("T0")
+            self.gcode.run_script_from_command("T0")  # 让T0宏处理所有偏移
             # 恢复打印头状态
             self._restore_state_to_extruder('extruder')
             # 恢复Z高度
@@ -206,16 +205,13 @@ class AutoExtruderSwitch:
             offset = gcode_move.get_status()['homing_origin']
             gcmd.respond_info("左头当前偏移 - X:%.3f Y:%.3f Z:%.3f" % 
                             (offset[0], offset[1], offset[2]))
-            # 同步位置
-            self.gcode.run_script_from_command("G92 X%.3f Y%.3f" % (cur_pos[0], cur_pos[1]))
         else:
             # 切换到右头
-            # 保存当前位置
             gcmd.respond_info("准备切换到右头")
             self.gcode.run_script_from_command("G91")  # 切换到相对模式
             self.gcode.run_script_from_command("G1 Z2")  # 抬高一点避免碰撞
             self.gcode.run_script_from_command("G90")  # 切换回绝对模式
-            self.gcode.run_script_from_command("T1")
+            self.gcode.run_script_from_command("T1")  # 让T1宏处理所有偏移
             # 恢复打印头状态
             self._restore_state_to_extruder('extruder1')
             # 恢复Z高度
@@ -227,9 +223,6 @@ class AutoExtruderSwitch:
             offset = gcode_move.get_status()['homing_origin']
             gcmd.respond_info("右头当前偏移 - X:%.3f Y:%.3f Z:%.3f" % 
                             (offset[0], offset[1], offset[2]))
-            # 同步位置
-            self.gcode.run_script_from_command("G92 X%.3f Y%.3f" % 
-                (cur_pos[0] + offset[0], cur_pos[1] + offset[1]))
             
         # 等待一小段时间确保切换完成
         self.toolhead.dwell(0.5)
