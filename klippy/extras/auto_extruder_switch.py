@@ -196,7 +196,7 @@ class AutoExtruderSwitch:
         T1_x_offset = variables.get('e1_xoffset', 0)
         T1_y_offset = variables.get('e1_yoffset', 0)
         T1_z_offset = variables.get('e1_zoffset', 0)
-        self.logger.info("T1_x_offset: %s, T1_y_offset: %s, T1_z_offset: %s", T1_x_offset, T1_y_offset, T1_z_offset)
+
         # 切换打印头
         if other_extruder_name == 'extruder':
             # 切换到左头
