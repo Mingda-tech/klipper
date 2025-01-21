@@ -188,11 +188,15 @@ class AutoExtruderSwitch:
         cur_pos = gcode_move.get_status()['gcode_position']
         
         # 获取右头偏移量
-        svv = self.printer.lookup_object('save_variables').variables
-        T1_x_offset = svv.get('e1_xoffset', 0)
-        T1_y_offset = svv.get('e1_yoffset', 0)
-        T1_z_offset = svv.get('e1_zoffset', 0)
-        
+        save_variables = self.printer.lookup_object('save_variables')
+        status = save_variables.get_status(self.printer.get_reactor().monotonic())
+        variables = status.get('variables', {})
+        if not variables:
+            self.logger.warning("No variables found in save_variables status")        
+        T1_x_offset = variables.get('e1_xoffset', 0)
+        T1_y_offset = variables.get('e1_yoffset', 0)
+        T1_z_offset = variables.get('e1_zoffset', 0)
+        self.logger.info("T1_x_offset: %s, T1_y_offset: %s, T1_z_offset: %s", T1_x_offset, T1_y_offset, T1_z_offset)
         # 切换打印头
         if other_extruder_name == 'extruder':
             # 切换到左头
