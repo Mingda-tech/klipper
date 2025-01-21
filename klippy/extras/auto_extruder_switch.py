@@ -206,6 +206,8 @@ class AutoExtruderSwitch:
             offset = gcode_move.get_status()['homing_origin']
             gcmd.respond_info("左头当前偏移 - X:%.3f Y:%.3f Z:%.3f" % 
                             (offset[0], offset[1], offset[2]))
+            # 同步位置
+            self.gcode.run_script_from_command("G92 X%.3f Y%.3f" % (cur_pos[0], cur_pos[1]))
         else:
             # 切换到右头
             # 保存当前位置
@@ -225,10 +227,13 @@ class AutoExtruderSwitch:
             offset = gcode_move.get_status()['homing_origin']
             gcmd.respond_info("右头当前偏移 - X:%.3f Y:%.3f Z:%.3f" % 
                             (offset[0], offset[1], offset[2]))
+            # 同步位置
+            self.gcode.run_script_from_command("G92 X%.3f Y%.3f" % 
+                (cur_pos[0] + offset[0], cur_pos[1] + offset[1]))
             
         # 等待一小段时间确保切换完成
         self.toolhead.dwell(0.5)
-        # 同步位置
+        # 同步挤出机位置
         self.gcode.run_script_from_command("G92 E0")  # 重置挤出机位置
         
         # 打印切换后的位置
