@@ -182,6 +182,17 @@ class AutoExtruderSwitch:
         # 保存当前打印头状态
         self._save_current_state()
         
+        # 获取暂停位置
+        pause_resume = self.printer.lookup_object('pause_resume')
+        gcode_move = self.printer.lookup_object('gcode_move')
+        cur_pos = gcode_move.get_status()['gcode_position']
+        
+        # 获取右头偏移量
+        svv = self.printer.lookup_object('save_variables').variables
+        T1_x_offset = svv.get('e1_xoffset', 0)
+        T1_y_offset = svv.get('e1_yoffset', 0)
+        T1_z_offset = svv.get('e1_zoffset', 0)
+        
         # 切换打印头
         if other_extruder_name == 'extruder':
             # 切换到左头
@@ -195,14 +206,22 @@ class AutoExtruderSwitch:
             self.gcode.run_script_from_command("T1")  # 让T1宏处理所有偏移
             # 恢复打印头状态
             self._restore_state_to_extruder('extruder1')
-            
+            # 更新暂停位置，考虑偏移量
+            if hasattr(pause_resume, 'last_position'):
+                new_pos = list(pause_resume.last_position)
+                new_pos[0] = new_pos[0] - T1_x_offset  # 调整X坐标
+                new_pos[1] = new_pos[1] - T1_y_offset  # 调整Y坐标
+                new_pos[2] = new_pos[2] - T1_z_offset  # 调整Z坐标
+                pause_resume.last_position = new_pos
+                gcmd.respond_info("更新暂停位置: X%.3f Y%.3f Z%.3f" % (new_pos[0], new_pos[1], new_pos[2]))
+                
         # 等待一小段时间确保切换完成
         self.toolhead.dwell(0.5)
         # 同步挤出机位置
         self.gcode.run_script_from_command("G92 E0")  # 重置挤出机位置
         
         # 恢复打印
-        # self.gcode.run_script_from_command("RESUME VELOCITY=30")
+        self.gcode.run_script_from_command("RESUME VELOCITY=30")
         
     cmd_ENABLE_AUTO_EXTRUDER_SWITCH_help = "Enable automatic extruder switching"
     def cmd_ENABLE_AUTO_EXTRUDER_SWITCH(self, gcmd):
