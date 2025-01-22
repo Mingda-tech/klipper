@@ -141,13 +141,13 @@ class AutoExtruderSwitch:
     cmd_CHECK_AND_SWITCH_EXTRUDER_help = "检查并切换打印头（如果需要）"
     def cmd_CHECK_AND_SWITCH_EXTRUDER(self, gcmd):
         if not self.auto_switch_enabled:
-            gcmd.respond_info("自动切换未启用，暂停打印")
+            self.gcode.run_script_from_command("M118 Filament run out, pausing print")
             self.gcode.run_script_from_command("PAUSE")
             return
             
         # 如果不是单头打印，不执行自动切换
         if not self._is_single_extruder_print():
-            gcmd.respond_info("不是单头打印模式，暂停打印")
+            self.gcode.run_script_from_command("M118 Not in single extruder mode, pausing print")
             self.gcode.run_script_from_command("PAUSE")
             return
             
@@ -161,12 +161,12 @@ class AutoExtruderSwitch:
         other_extruder_name = 'extruder1' if cur_extruder_name == 'extruder' else 'extruder'
         
         if cur_sensor is None:
-            gcmd.respond_info("当前传感器未配置，暂停打印")
+            self.gcode.run_script_from_command("M118 Current sensor not configured, pausing print")
             self.gcode.run_script_from_command("PAUSE")
             return
             
         if other_sensor is None:
-            gcmd.respond_info("另一个传感器未配置，暂停打印")
+            self.gcode.run_script_from_command("M118 Other sensor not configured, pausing print")
             self.gcode.run_script_from_command("PAUSE")
             return
             
@@ -175,24 +175,23 @@ class AutoExtruderSwitch:
         other_status = other_sensor.get_status(self.reactor.monotonic())
         
         if cur_status['filament_detected']:
-            gcmd.respond_info("当前打印头有料，不需要切换")
+            self.gcode.run_script_from_command("M118 Current extruder has filament, continuing print")
             return
             
         if not other_status['filament_detected']:
-            gcmd.respond_info("另一个打印头也无料，暂停打印")
+            self.gcode.run_script_from_command("M118 Both extruders out of filament, pausing print")
             self.gcode.run_script_from_command("PAUSE")
             return
             
-        gcmd.respond_info("开始执行自动切换到打印头: %s" % other_extruder_name)
+        self.gcode.run_script_from_command("M118 Filament run out, switching extruder")
         
         # 保存当前打印头状态
         self._save_current_state()
 
         # 抬升Z轴2mm
-        gcmd.respond_info("抬升Z轴2mm")
-        self.gcode.run_script_from_command("G91")  # 相对坐标
+        self.gcode.run_script_from_command("G91")  # Relative positioning
         self.gcode.run_script_from_command("G1 Z2 F600")
-        self.gcode.run_script_from_command("G90")  # 恢复绝对坐标
+        self.gcode.run_script_from_command("G90")  # Absolute positioning
         
         # 获取当前打印头的温度
         cur_heater = self.printer.lookup_object(cur_extruder_name)
@@ -201,15 +200,14 @@ class AutoExtruderSwitch:
         other_temp = other_heater.get_status(self.reactor.monotonic())['target']
         
         # 如果另一个打印头温度太低，先预热
-        if other_temp < cur_temp - 30:  # 允许30度的温差
-            gcmd.respond_info("预热打印头 %s 到 %.1f" % (other_extruder_name, cur_temp))
+        if other_temp < cur_temp - 30:  # Allow 30 degree difference
             if other_extruder_name == 'extruder':
                 self.gcode.run_script_from_command("M104 T0 S%.1f" % cur_temp)
                 self.gcode.run_script_from_command("M104 T1 S0")
             else:
                 self.gcode.run_script_from_command("M104 T1 S%.1f" % cur_temp)
                 self.gcode.run_script_from_command("M104 T0 S0")
-            # 等待预热完成
+            # Wait for heating
             if other_extruder_name == 'extruder':
                 self.gcode.run_script_from_command("M109 T0 S%.1f" % cur_temp)
             else:
@@ -218,49 +216,48 @@ class AutoExtruderSwitch:
       
         # 切换打印头
         if other_extruder_name == 'extruder':
-            # 切换到左头
-            gcmd.respond_info("切换到左头")
-            self.gcode.run_script_from_command("T0")  # 让T0宏处理所有偏移
-            # 恢复打印头状态
-            # self._restore_state_to_extruder('extruder')
+            # Switch to left extruder
+            self.gcode.run_script_from_command("M118 Switching to left extruder")
+            self.gcode.run_script_from_command("T0")  # Let T0 macro handle all offsets
         else:
-            # 切换到右头
-            gcmd.respond_info("切换到右头")
-            # 切换到右头
+            # Switch to right extruder
+            self.gcode.run_script_from_command("M118 Switching to right extruder")
             self.gcode.run_script_from_command("T1")
             
-        # 等待一小段时间确保切换完成
+        # Wait a moment to ensure switch is complete
         self.toolhead.dwell(0.5)
         
-        # 下降Z轴2mm
-        gcmd.respond_info("下降Z轴2mm")
-        self.gcode.run_script_from_command("G91")  # 相对坐标
+        # Lower Z by 2mm
+        self.gcode.run_script_from_command("G91")  # Relative positioning
         self.gcode.run_script_from_command("G1 Z-2 F600")
-        self.gcode.run_script_from_command("G90")  # 恢复绝对坐标
+        self.gcode.run_script_from_command("G90")  # Absolute positioning
         
-        # 同步挤出机位置
-        self.gcode.run_script_from_command("G92 E0")  # 重置挤出机位置
+        # Sync extruder position
+        self.gcode.run_script_from_command("G92 E0")  # Reset extruder position
 
-        # 恢复打印头状态
+        # Restore extruder state
         self._restore_state_to_extruder(other_extruder_name)
+        
+        # Show completion message
+        self.gcode.run_script_from_command("M118 Extruder switch complete, resuming print")
         
     cmd_ENABLE_AUTO_EXTRUDER_SWITCH_help = "Enable automatic extruder switching"
     def cmd_ENABLE_AUTO_EXTRUDER_SWITCH(self, gcmd):
         if self.auto_switch_enabled:
-            gcmd.respond_info("Auto extruder switch already enabled")
+            self.gcode.run_script_from_command("M118 Auto extruder switch already enabled")
             return
             
         self.auto_switch_enabled = True
-        gcmd.respond_info("Auto extruder switch enabled")
+        self.gcode.run_script_from_command("M118 Auto extruder switch enabled")
         
     cmd_DISABLE_AUTO_EXTRUDER_SWITCH_help = "Disable automatic extruder switching"
     def cmd_DISABLE_AUTO_EXTRUDER_SWITCH(self, gcmd):
         if not self.auto_switch_enabled:
-            gcmd.respond_info("Auto extruder switch already disabled")
+            self.gcode.run_script_from_command("M118 Auto extruder switch already disabled")
             return
             
         self.auto_switch_enabled = False
-        gcmd.respond_info("Auto extruder switch disabled")
+        self.gcode.run_script_from_command("M118 Auto extruder switch disabled")
 
 def load_config(config):
     return AutoExtruderSwitch(config) 
