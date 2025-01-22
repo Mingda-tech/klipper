@@ -20,7 +20,8 @@ class AutoExtruderSwitch:
             'speed_factor': 1.0,  # M220
             'extrude_factor': 1.0,  # M221
             'pressure_advance': 0.0,
-            'smooth_time': 0.0
+            'smooth_time': 0.0,
+            'print_speed': 0.0  # 添加打印速度字段
         }
         
         # Register commands
@@ -65,6 +66,9 @@ class AutoExtruderSwitch:
             self.saved_state['pressure_advance'] = cur_extruder.pressure_advance
             self.saved_state['smooth_time'] = cur_extruder.pressure_advance_smooth_time
             
+        # 保存当前打印速度 (mm/s)
+        self.saved_state['print_speed'] = gcode_move._get_gcode_speed()
+            
     def _restore_state_to_extruder(self, extruder_name):
         """将保存的状态恢复到指定打印头"""
         gcode_move = self.printer.lookup_object('gcode_move')
@@ -81,6 +85,10 @@ class AutoExtruderSwitch:
             (extruder_name, self.saved_state['pressure_advance'], 
              self.saved_state['smooth_time']))
              
+        # 恢复打印速度 (转换为 mm/min)
+        self.gcode.run_script_from_command(
+            "G1 F%.1f" % (self.saved_state['print_speed'] * 60.))
+            
     def _is_single_extruder_print(self):
         # 1. 如果只设置了右头温度，则为单头打印
         if self.right_head_only:
@@ -162,17 +170,20 @@ class AutoExtruderSwitch:
             
         gcmd.respond_info("开始执行自动切换到打印头: %s" % other_extruder_name)
         
-        # 获取当前打印头的温度
-        cur_heater = self.printer.lookup_object(cur_extruder_name)
-        other_heater = self.printer.lookup_object(other_extruder_name)
-        cur_temp = cur_heater.get_status(self.reactor.monotonic())['target']
-        other_temp = other_heater.get_status(self.reactor.monotonic())['target']
+        # 保存当前打印头状态
+        self._save_current_state()
 
         # 抬升Z轴2mm
         gcmd.respond_info("抬升Z轴2mm")
         self.gcode.run_script_from_command("G91")  # 相对坐标
         self.gcode.run_script_from_command("G1 Z2 F1200")
         self.gcode.run_script_from_command("G90")  # 恢复绝对坐标
+        
+        # 获取当前打印头的温度
+        cur_heater = self.printer.lookup_object(cur_extruder_name)
+        other_heater = self.printer.lookup_object(other_extruder_name)
+        cur_temp = cur_heater.get_status(self.reactor.monotonic())['target']
+        other_temp = other_heater.get_status(self.reactor.monotonic())['target']
         
         # 如果另一个打印头温度太低，先预热
         if other_temp < cur_temp - 30:  # 允许30度的温差
@@ -189,8 +200,6 @@ class AutoExtruderSwitch:
             else:
                 self.gcode.run_script_from_command("M109 T1 S%.1f" % cur_temp)
         
-        # 保存当前打印头状态
-        self._save_current_state()
       
         # 切换打印头
         if other_extruder_name == 'extruder':
@@ -205,7 +214,7 @@ class AutoExtruderSwitch:
             # 切换到右头
             self.gcode.run_script_from_command("T1")
             # 恢复打印头状态
-            # self._restore_state_to_extruder('extruder1')
+        self._restore_state_to_extruder(other_extruder_name)
             
         # 等待一小段时间确保切换完成
         self.toolhead.dwell(0.5)
