@@ -167,6 +167,12 @@ class AutoExtruderSwitch:
         other_heater = self.printer.lookup_object(other_extruder_name)
         cur_temp = cur_heater.get_status(self.reactor.monotonic())['target']
         other_temp = other_heater.get_status(self.reactor.monotonic())['target']
+
+        # 抬升Z轴2mm
+        gcmd.respond_info("抬升Z轴2mm")
+        self.gcode.run_script_from_command("G91")  # 相对坐标
+        self.gcode.run_script_from_command("G1 Z2 F1200")
+        self.gcode.run_script_from_command("G90")  # 恢复绝对坐标
         
         # 如果另一个打印头温度太低，先预热
         if other_temp < cur_temp - 30:  # 允许30度的温差
@@ -185,7 +191,7 @@ class AutoExtruderSwitch:
         
         # 保存当前打印头状态
         self._save_current_state()
-        
+      
         # 切换打印头
         if other_extruder_name == 'extruder':
             # 切换到左头
@@ -203,6 +209,13 @@ class AutoExtruderSwitch:
             
         # 等待一小段时间确保切换完成
         self.toolhead.dwell(0.5)
+        
+        # 下降Z轴2mm
+        gcmd.respond_info("下降Z轴2mm")
+        self.gcode.run_script_from_command("G91")  # 相对坐标
+        self.gcode.run_script_from_command("G1 Z-2 F1200")
+        self.gcode.run_script_from_command("G90")  # 恢复绝对坐标
+        
         # 同步挤出机位置
         self.gcode.run_script_from_command("G92 E0")  # 重置挤出机位置
         
