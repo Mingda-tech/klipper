@@ -58,7 +58,7 @@ class AutoExtruderSwitch:
         cur_extruder = self.toolhead.get_extruder()
         
         # 保存速度和流量比例
-        self.saved_state['speed_factor'] = gcode_move.speed_factor
+        self.saved_state['speed_factor'] = gcode_move._get_gcode_speed_override()
         self.saved_state['extrude_factor'] = gcode_move.extrude_factor
         
         # 保存压力提前
@@ -66,11 +66,11 @@ class AutoExtruderSwitch:
             self.saved_state['pressure_advance'] = cur_extruder.pressure_advance
             self.saved_state['smooth_time'] = cur_extruder.pressure_advance_smooth_time
             
-        # 保存当前打印速度 (mm/s)
+        # 保存当前打印速度 (mm/min)
         self.saved_state['print_speed'] = gcode_move._get_gcode_speed()
         
         # 打印保存的状态
-        logging.info("保存打印状态: speed_factor=%.2f, print_speed=%.2f mm/s, extrude_factor=%.2f, pressure_advance=%.4f",
+        logging.info("保存打印状态: speed_factor=%.2f, print_speed=%.2f mm/min, extrude_factor=%.2f, pressure_advance=%.4f",
                     self.saved_state['speed_factor'],
                     self.saved_state['print_speed'],
                     self.saved_state['extrude_factor'],
@@ -78,15 +78,13 @@ class AutoExtruderSwitch:
             
     def _restore_state_to_extruder(self, extruder_name):
         """将保存的状态恢复到指定打印头"""
-        gcode_move = self.printer.lookup_object('gcode_move')
         
         # 打印要恢复的状态和计算值
-        base_speed = self.saved_state['print_speed'] * 60. / self.saved_state['speed_factor']
-        logging.info("恢复打印状态到 %s: speed_factor=%.2f, print_speed=%.2f mm/s, base_speed=%.2f mm/min, extrude_factor=%.2f",
+        base_speed = self.saved_state['print_speed']  # 已经是mm/min
+        logging.info("恢复打印状态到 %s: speed_factor=%.2f, print_speed=%.2f mm/min, extrude_factor=%.2f",
                     extruder_name,
                     self.saved_state['speed_factor'],
                     self.saved_state['print_speed'],
-                    base_speed,
                     self.saved_state['extrude_factor'])
         
         # 恢复流量比例
@@ -100,11 +98,11 @@ class AutoExtruderSwitch:
              self.saved_state['smooth_time']))
              
         # 恢复速度因子和打印速度
-        # 注意：先设置速度，再设置速度因子，避免速度被重复影响
-        self.gcode.run_script_from_command(
-            "G1 F%.1f" % base_speed)
+        # 注意：先设置速度因子，再设置基础速度
         self.gcode.run_script_from_command(
             "M220 S%.0f" % (self.saved_state['speed_factor'] * 100.))
+        self.gcode.run_script_from_command(
+            "G1 F%.1f" % base_speed)
             
     def _is_single_extruder_print(self):
         # 1. 如果只设置了右头温度，则为单头打印
@@ -193,7 +191,7 @@ class AutoExtruderSwitch:
         # 抬升Z轴2mm
         gcmd.respond_info("抬升Z轴2mm")
         self.gcode.run_script_from_command("G91")  # 相对坐标
-        self.gcode.run_script_from_command("G1 Z2 F1200")
+        self.gcode.run_script_from_command("G1 Z2 F600")
         self.gcode.run_script_from_command("G90")  # 恢复绝对坐标
         
         # 获取当前打印头的温度
@@ -230,8 +228,6 @@ class AutoExtruderSwitch:
             gcmd.respond_info("切换到右头")
             # 切换到右头
             self.gcode.run_script_from_command("T1")
-            # 恢复打印头状态
-        self._restore_state_to_extruder(other_extruder_name)
             
         # 等待一小段时间确保切换完成
         self.toolhead.dwell(0.5)
@@ -239,11 +235,14 @@ class AutoExtruderSwitch:
         # 下降Z轴2mm
         gcmd.respond_info("下降Z轴2mm")
         self.gcode.run_script_from_command("G91")  # 相对坐标
-        self.gcode.run_script_from_command("G1 Z-2 F1200")
+        self.gcode.run_script_from_command("G1 Z-2 F600")
         self.gcode.run_script_from_command("G90")  # 恢复绝对坐标
         
         # 同步挤出机位置
         self.gcode.run_script_from_command("G92 E0")  # 重置挤出机位置
+
+        # 恢复打印头状态
+        self._restore_state_to_extruder(other_extruder_name)
         
     cmd_ENABLE_AUTO_EXTRUDER_SWITCH_help = "Enable automatic extruder switching"
     def cmd_ENABLE_AUTO_EXTRUDER_SWITCH(self, gcmd):
