@@ -68,14 +68,28 @@ class AutoExtruderSwitch:
             
         # 保存当前打印速度 (mm/s)
         self.saved_state['print_speed'] = gcode_move._get_gcode_speed()
+        
+        # 打印保存的状态
+        logging.info("保存打印状态: speed_factor=%.2f, print_speed=%.2f mm/s, extrude_factor=%.2f, pressure_advance=%.4f",
+                    self.saved_state['speed_factor'],
+                    self.saved_state['print_speed'],
+                    self.saved_state['extrude_factor'],
+                    self.saved_state['pressure_advance'])
             
     def _restore_state_to_extruder(self, extruder_name):
         """将保存的状态恢复到指定打印头"""
         gcode_move = self.printer.lookup_object('gcode_move')
         
-        # 恢复速度和流量比例
-        self.gcode.run_script_from_command(
-            "M220 S%.0f" % (self.saved_state['speed_factor'] * 100.))
+        # 打印要恢复的状态和计算值
+        base_speed = self.saved_state['print_speed'] * 60. / self.saved_state['speed_factor']
+        logging.info("恢复打印状态到 %s: speed_factor=%.2f, print_speed=%.2f mm/s, base_speed=%.2f mm/min, extrude_factor=%.2f",
+                    extruder_name,
+                    self.saved_state['speed_factor'],
+                    self.saved_state['print_speed'],
+                    base_speed,
+                    self.saved_state['extrude_factor'])
+        
+        # 恢复流量比例
         self.gcode.run_script_from_command(
             "M221 S%.0f" % (self.saved_state['extrude_factor'] * 100.))
             
@@ -85,9 +99,12 @@ class AutoExtruderSwitch:
             (extruder_name, self.saved_state['pressure_advance'], 
              self.saved_state['smooth_time']))
              
-        # 恢复打印速度 (转换为 mm/min)
+        # 恢复速度因子和打印速度
+        # 注意：先设置速度，再设置速度因子，避免速度被重复影响
         self.gcode.run_script_from_command(
-            "G1 F%.1f" % (self.saved_state['print_speed'] * 60.))
+            "G1 F%.1f" % base_speed)
+        self.gcode.run_script_from_command(
+            "M220 S%.0f" % (self.saved_state['speed_factor'] * 100.))
             
     def _is_single_extruder_print(self):
         # 1. 如果只设置了右头温度，则为单头打印
