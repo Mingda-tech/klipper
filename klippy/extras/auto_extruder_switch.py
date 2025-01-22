@@ -186,26 +186,20 @@ class AutoExtruderSwitch:
         # 保存当前打印头状态
         self._save_current_state()
         
-        # 保存当前位置状态
-        self.gcode.run_script_from_command("SAVE_GCODE_STATE NAME=SWITCH_STATE")
-        
         # 切换打印头
         if other_extruder_name == 'extruder':
             # 切换到左头
             gcmd.respond_info("切换到左头")
             self.gcode.run_script_from_command("T0")  # 让T0宏处理所有偏移
             # 恢复打印头状态
-            self._restore_state_to_extruder('extruder')
+            # self._restore_state_to_extruder('extruder')
         else:
             # 切换到右头
             gcmd.respond_info("切换到右头")
             # 切换到右头
             self.gcode.run_script_from_command("T1")
             # 恢复打印头状态
-            self._restore_state_to_extruder('extruder1')
-            
-        # 恢复位置状态
-        self.gcode.run_script_from_command("RESTORE_GCODE_STATE NAME=SWITCH_STATE MOVE=1 MOVE_SPEED=30")
+            # self._restore_state_to_extruder('extruder1')
             
         # 等待一小段时间确保切换完成
         self.toolhead.dwell(0.5)
