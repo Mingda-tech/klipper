@@ -46,8 +46,8 @@ class RunoutHelper:
         # of pause_resume execute immediately.
         pause_prefix = ""
         if self.runout_pause:
-            pause_resume = self.printer.lookup_object('pause_resume')
-            pause_resume.send_pause_command()
+            # pause_resume = self.printer.lookup_object('pause_resume')
+            # pause_resume.send_pause_command()
             pause_prefix = "CHECK_AND_SWITCH_EXTRUDER\n"
             self.pause_delay = 0.0
             self.printer.get_reactor().pause(eventtime + self.pause_delay)
