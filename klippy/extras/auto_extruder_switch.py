@@ -248,7 +248,7 @@ class AutoExtruderSwitch:
             return
             
         self.auto_switch_enabled = True
-        self.gcode.run_script_from_command("M118 Auto extruder switch enabled")
+        self.gcode.run_script_from_command("M118 Auto extruder switch enabled, this feature only works when printing with a single extruder")
         
     cmd_DISABLE_AUTO_EXTRUDER_SWITCH_help = "Disable automatic extruder switching"
     def cmd_DISABLE_AUTO_EXTRUDER_SWITCH(self, gcmd):
