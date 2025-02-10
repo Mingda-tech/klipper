@@ -46,9 +46,10 @@ class RunoutHelper:
         # of pause_resume execute immediately.
         pause_prefix = ""
         if self.runout_pause:
-            pause_resume = self.printer.lookup_object('pause_resume')
-            pause_resume.send_pause_command()
-            pause_prefix = "PAUSE\n"
+            # pause_resume = self.printer.lookup_object('pause_resume')
+            # pause_resume.send_pause_command()
+            pause_prefix = "CHECK_AND_SWITCH_EXTRUDER\n"
+            self.pause_delay = 0.0
             self.printer.get_reactor().pause(eventtime + self.pause_delay)
         self._exec_gcode(pause_prefix, self.runout_gcode)
     def _insert_event_handler(self, eventtime):
