@@ -10,17 +10,28 @@ import gcode, configfile, pins, mcu, toolhead, webhooks, extras.fan
 
 message_ready = "Printer is ready"
 
-message_startup = """
-Printer is not ready
-The klippy host software is attempting to connect.  Please
-retry in a few moments.
-"""
+message_startup = """{"code":"key3", "msg":"Printer is not ready The klippy host software is attempting to connect.  Please retry in a few moments."}"""
 
 message_restart = """
 Once the underlying issue is corrected, use the "RESTART"
 command to reload the config and restart the host software.
 Printer is halted
 """
+
+message_mcu_connect_error = """
+Once the underlying issue is corrected, use the
+'FIRMWARE_RESTART' command to reset the firmware, reload the
+config, and restart the host software.
+Error configuring printer
+"""
+
+message_shutdown = """
+Once the underlying issue is corrected, use the
+'FIRMWARE_RESTART' command to reset the firmware, reload the
+config, and restart the host software.
+Printer is shutdown
+"""
+
 
 class Printer:
     config_error = configfile.error
@@ -70,13 +81,13 @@ class Printer:
     def add_object(self, name, obj):
         if name in self.objects:
             raise self.config_error(
-                "Printer object '%s' already created" % (name,))
+                """{"code":"key123", "msg": "Printer object '%s' already created", "values": ["%s"]}""" % (name, name))
         self.objects[name] = obj
     def lookup_object(self, name, default=configfile.sentinel):
         if name in self.objects:
             return self.objects[name]
         if default is configfile.sentinel:
-            raise self.config_error("Unknown config object '%s'" % (name,))
+            raise self.config_error("""{"code":"key122", "msg": "Unknown config object '%s'", "values": ["%s"]}""" % (name, name))
         return default
     def lookup_objects(self, module=None):
         if module is None:
@@ -99,7 +110,7 @@ class Printer:
         if not os.path.exists(py_name) and not os.path.exists(py_dirname):
             if default is not configfile.sentinel:
                 return default
-            raise self.config_error("Unable to load module '%s'" % (section,))
+            raise self.config_error("""{"code":"key124", "msg": "Unable to load module '%s'", "values": ["%s"]}""" % (section, section))
         mod = importlib.import_module('extras.' + module_name)
         init_func = 'load_config'
         if len(module_parts) > 1:
@@ -134,8 +145,40 @@ class Printer:
                     return
                 cb()
         except (self.config_error, pins.error) as e:
+           # logging.exception("Config error")
+           # self._set_state("%s\n%s" % (str(e), message_restart))
+           # return
+            logging.error(e)
+            # self._set_state("%s\n%s" % (str(e), message_restart))^M
+            if '{"code":' in str(e):
+                try:
+                    import json
+                    tmp_state = eval(str(e))
+                    tmp_state["msg"] = tmp_state["msg"] + "\n" + message_restart
+                    self._set_state(json.dumps(tmp_state))
+                except Exception as e:
+                    logging.exception(e)
+                    self._set_state("%s\n%s" % (str(e), message_restart))
+            else:
+                if "File contains no section headers." in str(e):
+                    value = str(e)
+                    value = value.replace("File contains no section headers.", "").replace("'*\n'", "'*\\n'")
+
+                    msg = """{"code": "key336", "msg": "File contains no section headers.<br/>%s", "values":["%s"]}""" % (
+                        value, value
+                    )
+                    self._set_state(msg)
+                elif "File contains parsing errors:" in str(e):
+                    value = str(e)
+                    value = value.replace("File contains parsing errors:", "").replace("'*\n'", "'*\\n'")
+
+                    msg = """{"code": "key337", "msg": "File contains parsing errors:%s<br/>%s", "values":["%s"]}""" % (
+                        value, message_restart, value
+                    )
+                    self._set_state(msg)
+                else:
+                    self._set_state("%s\n%s" % (str(e), message_restart))
             logging.exception("Config error")
-            self._set_state("%s\n%s" % (str(e), message_restart))
             return
         except msgproto.error as e:
             msg = "Protocol error"
@@ -145,10 +188,16 @@ class Printer:
             util.dump_mcu_build()
             return
         except mcu.error as e:
-            msg = "MCU error during connect"
-            logging.exception(msg)
-            self._set_state(msg)
-            self.send_event("klippy:notify_mcu_error", msg, {"error": str(e)})
+           # msg = "MCU error during connect"
+           # logging.exception(msg)
+           # self._set_state(msg)
+           # self.send_event("klippy:notify_mcu_error", msg, {"error": str(e)})
+            logging.exception("MCU error during connect")
+            if '"msg"' in str(e):
+                json_msg = str(e)
+            else:
+                json_msg = '{"code":"key0", "msg":"%s%s"}' % (str(e), message_mcu_connect_error)
+            self._set_state(json_msg)
             util.dump_mcu_build()
             return
         except Exception as e:
@@ -203,9 +252,14 @@ class Printer:
     def invoke_shutdown(self, msg, details={}):
         if self.in_shutdown_state:
             return
-        logging.error("Transition to shutdown state: %s", msg)
+        logging.error("Transition to shutdown state: %s", msg)        
         self.in_shutdown_state = True
-        self._set_state(msg)
+        self.in_shutdown_state = True
+        if "{" in msg:
+            result = msg
+        else:
+            result = '{"code":"key1", "msg":"%s%s"}' % (msg, message_shutdown.replace('"',"'"))
+        self._set_state(result)
         for cb in self.event_handlers.get("klippy:shutdown", []):
             try:
                 cb()

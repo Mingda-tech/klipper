@@ -19,12 +19,11 @@ class ZAdjustHelper:
         kin = self.printer.lookup_object('toolhead').get_kinematics()
         z_steppers = [s for s in kin.get_steppers() if s.is_active_axis('z')]
         if len(z_steppers) != self.z_count:
-            raise self.printer.config_error(
-                "%s z_positions needs exactly %d items" % (
-                    self.name, len(z_steppers)))
+            err_msg = """{"code":"key346", "msg":"%s z_positions needs exactly %d items", "values":[]}""" % (self.name, len(z_steppers))
+            raise self.printer.config_error(err_msg)
         if len(z_steppers) < 2:
-            raise self.printer.config_error(
-                "%s requires multiple z steppers" % (self.name,))
+            err_msg = """{"code":"key347", "msg":"%s requires multiple z steppers", "values":[]}""" % self.name
+            raise self.printer.config_error(err_msg)
         self.z_steppers = z_steppers
     def adjust_steppers(self, adjustments, speed):
         toolhead = self.printer.lookup_object('toolhead')
@@ -53,12 +52,13 @@ class ZAdjustHelper:
             try:
                 toolhead.move(curpos, speed)
                 toolhead.set_position(curpos)
-            except:
+            except Exception as err:
                 logging.exception("ZAdjustHelper adjust_steppers")
                 toolhead.flush_step_generation()
                 for s in self.z_steppers:
                     s.set_trapq(toolhead.get_trapq())
-                raise
+                err_msg = """{"code":"key348", "msg":"toolhead.move(%s, %s) ZAdjustHelper adjust_steppers error:%s", "values":[]}""" % (str(curpos), speed, str(err))
+                raise gcode.error(err_msg)
         # Z should now be level - do final cleanup
         last_stepper_offset, last_stepper = positions[-1]
         toolhead.flush_step_generation()
@@ -115,13 +115,14 @@ class RetryHelper:
                 self.current_retry, self.max_retries, self.value_label,
                 error, self.retry_tolerance))
         if self.check_increase(error):
-            raise self.gcode.error("Retries aborting: %s is increasing. %s"
-                                   % (self.value_label, self.error_msg_extra))
+            err_msg = """{"code":"key349", "msg":"Retries aborting: %s is increasing. %s", "values":[]}""" % (self.value_label, self.error_msg_extra)
+            raise self.gcode.error(err_msg)
         if error <= self.retry_tolerance:
             return "done"
         self.current_retry += 1
         if self.current_retry > self.max_retries:
-            raise self.gcode.error("Too many retries")
+            err_msg = """{"code":"key350", "msg":"Too many retries", "values":[]}"""
+            raise self.gcode.error(err_msg)
         return "retry"
 
 class ZTilt:

@@ -108,9 +108,9 @@ class PrinterSkew:
                     if len(lengths) != 3:
                         raise Exception
                 except Exception:
-                    raise gcmd.error(
-                        "skew_correction: improperly formatted entry for "
-                        "plane [%s]\n%s" % (plane, gcmd.get_commandline()))
+                   raise gcmd.error(
+                        """{"code": "key315", "msg": "skew_correction: improperly formatted entry for plane [%s]\n%s", "values":["%s", "%s"]}""" % (
+                            plane, gcmd.get_commandline(), plane, gcmd.get_commandline()))
                 factor = plane.lower() + '_factor'
                 setattr(self, factor, calc_skew_factor(*lengths))
     cmd_SKEW_PROFILE_help = "Profile management for skew_correction"

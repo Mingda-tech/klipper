@@ -126,6 +126,8 @@ class HX71xBase:
         prev_error_count = self.last_error_count
         samples = self.ffreader.pull_samples()
         self._convert_samples(samples)
+        if len(samples) < self.sps * UPDATE_INTERVAL:
+            raise self.printer.command_error("""{"code":"key503", "msg":"z-Touch::read_base: Can not read z-Touch data."}""") 
         overflows = self.ffreader.get_last_overflows() - prev_overflows
         errors = self.last_error_count - prev_error_count
         if errors > 0:

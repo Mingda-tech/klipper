@@ -38,6 +38,10 @@ class ManualStepper:
         #----------------------------------------------
         self.pressure_advance = self.pressure_advance_smooth_time = 0.
         self.motion_queue = None
+        self.sync_advance_distance = config.getfloat('sync_advance_distance', 0., minval=0.)
+        self.sync_advance_velocity = config.getfloat('sync_advance_velocity', self.velocity, above=0.)
+        self.sync_advance_accel = config.getfloat('sync_advance_accel', self.accel, minval=0.)
+        self.my_self = self
         #----------------------------------------------
 
         self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
@@ -56,6 +60,7 @@ class ManualStepper:
         gcode.register_mux_command("SYNC_MANUAL_STEPPER", "STEPPER",
                                    self.stepper_name, self.cmd_SYNC_MANUAL_MOTION,
                                    desc=self.cmd_SYNC_MANUAL_MOTION_help)
+        self.printer.add_object('manual_stepper '+self.stepper_name, self)
 
     #----------------------------------------------
     def _handle_connect(self):
@@ -88,19 +93,48 @@ class ManualStepper:
         toolhead = self.printer.lookup_object('toolhead')
         toolhead.flush_step_generation()
         if not extruder_name:
+            if self.motion_queue is not None:
+                extruder = self.printer.lookup_object(self.motion_queue, None)
+                if extruder is None:
+                    raise self.printer.command_error(
+                        "'%s' is not a valid extruder." % (self.motion_queue,))
+                extruder.del_sync_stepper(self.stepper_name)
+            old_motion_queue = self.motion_queue
             self.rail.set_trapq(self.trapq)
             self.motion_queue = None
-            return
+            return old_motion_queue
         extruder = self.printer.lookup_object(extruder_name, None)
         if extruder is None:
             raise self.printer.command_error("'%s' is not a valid extruder."
                                              % (extruder_name,))
+        if not extruder.has_multi_sync():
+            # The extruder only supports the synchronization of a single motor.
+            # So we need to unsynchronize the other motors.
+            sync_steppers = extruder.get_sync_steppers().copy()
+            for name, obj_name in sync_steppers.items():
+                obj = self.printer.lookup_object(obj_name)
+                obj.sync_to_extruder(None)
+        extruder.add_sync_stepper(self.stepper_name, 'manual_stepper '+self.stepper_name)
         #self.rail.set_stepper_kinematics(self.sk_extruder)
-        self._set_pressure_advance(extruder.extruder_stepper.pressure_advance, extruder.extruder_stepper.pressure_advance_smooth_time)
+        self._set_pressure_advance(extruder.extruder_stepper.pressure_advance,
+            extruder.extruder_stepper.pressure_advance_smooth_time)
         self.rail.set_position([extruder.last_position, 0., 0.])
         self.rail.set_trapq(extruder.get_trapq())
         self.motion_queue = extruder_name
         self.do_enable(1)
+        # logging.info("name:%s motion:%s", self.stepper_name, self.motion_queue)
+        return None
+    def get_sync_extruder_name(self):
+        return motion_queue
+    def do_sync_advance_move(self, dir):
+        if (self.sync_advance_distance > 0.000001):
+            old_sync = self.sync_to_extruder(None)
+            self.do_set_position(0.)
+            self.do_move((self.sync_advance_distance * dir),
+                self.sync_advance_velocity, self.sync_advance_accel)
+            self.sync_to_extruder(old_sync)
+            return True
+        return False
     #----------------------------------------------
     def sync_print_time(self):
         toolhead = self.printer.lookup_object('toolhead')
@@ -144,7 +178,7 @@ class ManualStepper:
     def do_homing_move(self, movepos, speed, accel, triggered, check_trigger):
         if not self.can_home:
             raise self.printer.command_error(
-                "No endstop for this manual stepper")
+                """{"code":"key198", "msg": "No endstop for this manual stepper", "values": []}""")
         self.homing_accel = accel
         pos = [movepos, 0., 0., 0.]
         endstops = self.rail.get_endstops()

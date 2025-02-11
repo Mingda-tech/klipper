@@ -141,7 +141,7 @@ class AccelCommandHelper:
         # End measurements
         name = gcmd.get("NAME", time.strftime("%Y%m%d_%H%M%S"))
         if not name.replace('-', '').replace('_', '').isalnum():
-            raise gcmd.error("Invalid NAME parameter")
+            raise gcmd.error("""{"code":"key64", "msg":"Invalid adxl345 NAME parameter", "values": []}""")
         bg_client = self.bg_client
         self.bg_client = None
         bg_client.finish_measurements()
@@ -160,7 +160,7 @@ class AccelCommandHelper:
         aclient.finish_measurements()
         values = aclient.get_samples()
         if not values:
-            raise gcmd.error("No accelerometer measurements found")
+           raise gcmd.error("""{"code":"key232", "msg":"No adxl345 measurements found", "values": []}""")
         _, accel_x, accel_y, accel_z = values[-1]
         gcmd.respond_info("accelerometer values (x, y, z): %.6f, %.6f, %.6f"
                           % (accel_x, accel_y, accel_z))
@@ -191,10 +191,13 @@ class ADXL345:
     def __init__(self, config):
         self.printer = config.get_printer()
         AccelCommandHelper(config, self)
-        self.axes_map = read_axes_map(config, SCALE_XY, SCALE_XY, SCALE_Z)
+        try:
+            self.axes_map = read_axes_map(config, SCALE_XY, SCALE_XY, SCALE_Z)
+        except Exception as e:
+            raise config.error('{"code": "key9", "msg": "Invalid adxl345 axes_map parameter"}')
         self.data_rate = config.getint('rate', 3200)
         if self.data_rate not in QUERY_RATES:
-            raise config.error("Invalid rate parameter: %d" % (self.data_rate,))
+             raise config.error("""{"code":"key245", "msg":"Invalid rate parameter: %d", "values": [%d]}""" % (self.data_rate,self.data_rate,))
         # Setup mcu sensor_adxl345 bulk query code
         self.spi = bus.MCU_SPI_from_config(config, 3, default_speed=5000000)
         self.mcu = mcu = self.spi.get_mcu()
@@ -232,10 +235,11 @@ class ADXL345:
         stored_val = self.read_reg(reg)
         if stored_val != val:
             raise self.printer.command_error(
-                    "Failed to set ADXL345 register [0x%x] to 0x%x: got 0x%x. "
-                    "This is generally indicative of connection problems "
-                    "(e.g. faulty wiring) or a faulty adxl345 chip." % (
-                        reg, val, stored_val))
+                    """{"code":"key65", "msg":"Failed to set ADXL345 register [0x%x] to 0x%x: got 0x%x. 
+                    \nThis is generally indicative of connection problems
+                    \n(e.g. faulty wiring)
+                    \nor a faulty adxl345 chip.", "values": ["%x","%x","%x"]}""" % (
+                        reg, val, stored_val, reg, val, stored_val))
     def start_internal_client(self):
         aqh = AccelQueryHelper(self.printer)
         self.batch_bulk.add_client(aqh.handle_batch)
@@ -265,11 +269,9 @@ class ADXL345:
         # noise or wrong signal as a correctly initialized device
         dev_id = self.read_reg(REG_DEVID)
         if dev_id != ADXL345_DEV_ID:
-            raise self.printer.command_error(
-                "Invalid adxl345 id (got %x vs %x).\n"
-                "This is generally indicative of connection problems\n"
-                "(e.g. faulty wiring) or a faulty adxl345 chip."
-                % (dev_id, ADXL345_DEV_ID))
+           raise self.printer.command_error(
+                """{"code":"key119", "msg": "Invalid adxl345 id (got %x vs %x).This is generally indicative of connection problems(e.g. faulty wiring) or a faulty adxl345 chip.", "values": ["%x", "%x"]}"""
+                % (dev_id, ADXL345_DEV_ID, dev_id, ADXL345_DEV_ID))
         # Setup chip in requested query rate
         self.set_reg(REG_POWER_CTL, 0x00)
         self.set_reg(REG_DATA_FORMAT, 0x0B)
@@ -292,9 +294,16 @@ class ADXL345:
         logging.info("ADXL345 finished '%s' measurements", self.name)
     def _process_batch(self, eventtime):
         samples = self.ffreader.pull_samples()
-        self._convert_samples(samples)
         if not samples:
             return {}
+            # 检查是否有溢出
+        overflows = self.ffreader.get_last_overflows()
+        if overflows > 0:     
+            raise self.printer.command_error(
+            """{"code":"key118", "msg":"ADXL345 FIFO overflow", "values": []}"""
+        )
+         # 转换样本数据
+        self._convert_samples(samples)
         return {'data': samples, 'errors': self.last_error_count,
                 'overflows': self.ffreader.get_last_overflows()}
 

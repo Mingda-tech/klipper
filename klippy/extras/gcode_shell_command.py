@@ -16,7 +16,7 @@ class ShellCommand:
         cmd = config.get('command')
         cmd = os.path.expanduser(cmd)
         self.command = shlex.split(cmd)
-        self.timeout = config.getfloat('timeout', 2., above=0.)
+        self.timeout = config.getfloat('timeout', 2., minval=0.)
         self.verbose = config.getboolean('verbose', True)
         self.proc_fd = None
         self.partial_output = ""
@@ -49,6 +49,7 @@ class ShellCommand:
         gcode_params = params.get('PARAMS','')
         gcode_params = shlex.split(gcode_params)
         reactor = self.printer.get_reactor()
+        timeout = params.get_int('TIMEOUT', self.timeout, minval=0)
         try:
             proc = subprocess.Popen(
                 self.command + gcode_params, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -60,14 +61,17 @@ class ShellCommand:
             self.proc_fd = proc.stdout.fileno()
             self.gcode.respond_info("Running Command {%s}...:" % (self.name))
             hdl = reactor.register_fd(self.proc_fd, self._process_output)
-        eventtime = reactor.monotonic()
-        endtime = eventtime + self.timeout
         complete = False
-        while eventtime < endtime:
-            eventtime = reactor.pause(eventtime + .05)
-            if proc.poll() is not None:
-                complete = True
-                break
+        if timeout > 0.000001:
+            eventtime = reactor.monotonic()
+            endtime = eventtime + self.timeout
+            while eventtime < endtime:
+                eventtime = reactor.pause(eventtime + .05)
+                if proc.poll() is not None:
+                    complete = True
+                    break
+        else:
+            complete = True
         if not complete:
             proc.terminate()
         if self.verbose:

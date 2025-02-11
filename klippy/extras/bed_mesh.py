@@ -90,6 +90,7 @@ class BedMesh:
         self.printer.register_event_handler("klippy:connect",
                                             self.handle_connect)
         self.last_position = [0., 0., 0., 0.]
+        self.probe_object = config.get('probe_object', "probe")
         self.bmc = BedMeshCalibrate(config, self)
         self.z_mesh = None
         self.toolhead = None
@@ -133,6 +134,9 @@ class BedMesh:
         self.update_status()
     def handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
+        if self.printer.lookup_object(self.probe_object, None) is None:
+            self.probe_object = "probe"
+            self.gcode.respond_info(("probe_name:%s" % (self.probe_object,)))
         self.bmc.print_generated_points(logging.info)
     def set_mesh(self, mesh):
         if mesh is not None and self.fade_end != self.FADE_DISABLE:
@@ -234,7 +238,8 @@ class BedMesh:
             "mesh_max": (0., 0.),
             "probed_matrix": [[]],
             "mesh_matrix": [[]],
-            "profiles": self.pmgr.get_profiles()
+            "profiles": self.pmgr.get_profiles(),
+            "probe_name": self.probe_object,
         }
         if self.z_mesh is not None:
             params = self.z_mesh.get_mesh_params()
@@ -289,7 +294,7 @@ class BedMesh:
             gcmd.respond_info("No mesh loaded to offset")
     def _handle_dump_request(self, web_request):
         eventtime = self.printer.get_reactor().monotonic()
-        prb = self.printer.lookup_object("probe", None)
+        prb = self.printer.lookup_object(self.probe_object, None)
         th_sts = self.printer.lookup_object("toolhead").get_status(eventtime)
         result = {"current_mesh": {}, "profiles": self.pmgr.get_profiles()}
         if self.z_mesh is not None:
@@ -332,7 +337,7 @@ class BedMeshCalibrate:
         self.mesh_config = collections.OrderedDict()
         self._init_mesh_config(config)
         self.probe_mgr = ProbeManager(
-            config, self.orig_config, self.probe_finalize
+            config, self.orig_config, self.probe_finalize, bedmesh
         )
         try:
             self.probe_mgr.generate_points(
@@ -348,7 +353,9 @@ class BedMeshCalibrate:
             desc=self.cmd_BED_MESH_CALIBRATE_help)
     def print_generated_points(self, print_func):
         x_offset = y_offset = 0.
-        probe = self.printer.lookup_object('probe', None)
+        probe = self.printer.lookup_object(self.bedmesh.probe_object, None)
+        print_func(("print_generated_points:%s!" %
+                    (self.bedmesh.probe_object,)))
         if probe is not None:
             x_offset, y_offset = probe.get_offsets()[:2]
         print_func("bed_mesh: generated points\nIndex"
@@ -553,7 +560,8 @@ class BedMeshCalibrate:
             self.mesh_max = adjusted_mesh_max
             self.mesh_config["x_count"] = new_x_probe_count
             self.mesh_config["y_count"] = new_y_probe_count
-        self._profile_name = None
+        # self._profile_name = None
+        self._profile_name = gcmd.get('PROFILE', "default")
         return True
     def update_config(self, gcmd):
         # reset default configuration
@@ -640,6 +648,7 @@ class BedMeshCalibrate:
     cmd_BED_MESH_CALIBRATE_help = "Perform Mesh Bed Leveling"
     def cmd_BED_MESH_CALIBRATE(self, gcmd):
         self._profile_name = gcmd.get('PROFILE', "default")
+        logging.info(("BedMeshC:%s!" % (self.bedmesh.probe_object,)))
         if not self._profile_name.strip():
             raise gcmd.error("Value for parameter 'PROFILE' must be specified")
         self.bedmesh.set_mesh(None)
@@ -804,10 +813,11 @@ class BedMeshCalibrate:
                 "  %-4d| %-17s| %-25s| %s" % (i, gen_pt, probed_pt, corr_pt))
 
 class ProbeManager:
-    def __init__(self, config, orig_config, finalize_cb):
+    def __init__(self, config, orig_config, finalize_cb, bedmesh):
         self.printer = config.get_printer()
         self.cfg_overshoot = config.getfloat("scan_overshoot", 0, minval=1.)
         self.orig_config = orig_config
+        self.bedmesh = bedmesh
         self.faulty_regions = []
         self.overshoot = self.cfg_overshoot
         self.zero_ref_pos = config.getfloatlist(
@@ -819,7 +829,8 @@ class ProbeManager:
         self.is_round = orig_config["radius"] is not None
         self.probe_helper = probe.ProbePointsHelper(config, finalize_cb, [])
         self.probe_helper.use_xy_offsets(True)
-        self.rapid_scan_helper = RapidScanHelper(config, self, finalize_cb)
+        self.rapid_scan_helper = RapidScanHelper(config, self, finalize_cb,
+                                                 bedmesh)
         self._init_faulty_regions(config)
 
     def _init_faulty_regions(self, config):
@@ -863,12 +874,19 @@ class ProbeManager:
     def start_probe(self, gcmd):
         method = gcmd.get("METHOD", "automatic").lower()
         can_scan = False
-        pprobe = self.printer.lookup_object("probe", None)
+        use_md_dist = False
+        pprobe = self.printer.lookup_object(self.bedmesh.probe_object, None)
         if pprobe is not None:
             probe_name = pprobe.get_status(None).get("name", "")
             can_scan = probe_name.startswith("probe_eddy_current")
+            use_md_dist = probe_name.startswith("md_dist")
+            gcmd.respond_info(("start_probe:%s!" % (probe_name,)))
+        else:
+            gcmd.respond_info(("start_probe:%s is None!" % (self.bedmesh.probe_object,)))
         if method == "rapid_scan" and can_scan:
             self.rapid_scan_helper.perform_rapid_scan(gcmd)
+        elif use_md_dist:
+            pprobe.md_dist.mesh_helper.cmd_BED_MESH_CALIBRATE(gcmd)
         else:
             self.probe_helper.start_probe(gcmd)
 
@@ -882,7 +900,7 @@ class ProbeManager:
         return self.substitutes
 
     def generate_points(
-        self, mesh_config, mesh_min, mesh_max, radius, origin,
+        self, mesh_config, mesh_min, mesh_max, radius, origin,error,
         probe_method="automatic"
     ):
         x_cnt = mesh_config['x_count']
@@ -895,8 +913,8 @@ class ProbeManager:
         x_dist = math.floor(x_dist * 100) / 100
         y_dist = math.floor(y_dist * 100) / 100
         if x_dist < 1. or y_dist < 1.:
-            raise BedMeshError("bed_mesh: min/max points too close together")
-
+            raise error("""{"code":"key43", "msg":"bed_mesh: min/max points too close together", "values": []}""")
+        
         if radius is not None:
             # round bed, min/max needs to be recalculated
             y_dist = x_dist
@@ -938,7 +956,7 @@ class ProbeManager:
         self.base_points = points
         self.substitutes.clear()
         # adjust overshoot
-        og_min_x = self.orig_config["mesh_min"][0]
+        og_min_x = self.orig_config["probed_matrix"][0]
         og_max_x = self.orig_config["mesh_max"][0]
         add_ovs = min(max(0, min_x - og_min_x), max(0, og_max_x - max_x))
         self.overshoot = self.cfg_overshoot + math.floor(add_ovs)
@@ -1173,12 +1191,13 @@ MAX_HIT_DIST = 2.
 MM_WIN_SPEED = 125
 
 class RapidScanHelper:
-    def __init__(self, config, probe_mgr, finalize_cb):
+    def __init__(self, config, probe_mgr, finalize_cb, bedmesh):
         self.printer = config.get_printer()
         self.probe_manager = probe_mgr
         self.speed = config.getfloat("speed", 50., above=0.)
         self.scan_height = config.getfloat("horizontal_move_z", 5.)
         self.finalize_callback = finalize_cb
+        self.bedmesh = bedmesh
 
     def perform_rapid_scan(self, gcmd):
         speed = gcmd.get_float("SCAN_SPEED", self.speed)
@@ -1186,7 +1205,7 @@ class RapidScanHelper:
         gcmd.respond_info(
             "Beginning rapid surface scan at height %.2f..." % (scan_height)
         )
-        pprobe = self.printer.lookup_object("probe")
+        pprobe = self.printer.lookup_object(self.bedmesh.probe_object)
         toolhead = self.printer.lookup_object("toolhead")
         # Calculate time window around which a sample is valid.  Current
         # assumption is anything within 2mm is usable, so:
@@ -1224,7 +1243,7 @@ class RapidScanHelper:
     def _raise_tool(self, gcmd, scan_height):
         # If the nozzle is below scan height raise the tool
         toolhead = self.printer.lookup_object("toolhead")
-        pprobe = self.printer.lookup_object("probe")
+        pprobe = self.printer.lookup_object(self.bedmesh.probe_object)
         cur_pos = toolhead.get_position()
         if cur_pos[2] >= scan_height:
             return
@@ -1236,7 +1255,7 @@ class RapidScanHelper:
     def _move_to_scan_height(self, gcmd, scan_height):
         time_window = gcmd.get_float("SAMPLE_TIME")
         toolhead = self.printer.lookup_object("toolhead")
-        pprobe = self.printer.lookup_object("probe")
+        pprobe = self.printer.lookup_object(self.bedmesh.probe_object)
         cur_pos = toolhead.get_position()
         pparams = pprobe.get_probe_params(gcmd)
         lift_speed = pparams["lift_speed"]

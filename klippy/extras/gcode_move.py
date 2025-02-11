@@ -49,6 +49,7 @@ class GCodeMove:
         self.saved_states = {}
         self.move_transform = self.move_with_transform = None
         self.position_with_transform = (lambda: [0., 0., 0., 0.])
+        self.extruder_stepper_dir = 0
     def _handle_ready(self):
         self.is_printer_ready = True
         if self.move_transform is None:
@@ -125,21 +126,37 @@ class GCodeMove:
                         self.last_position[pos] = v + self.base_position[pos]
             if 'E' in params:
                 v = float(params['E']) * self.extrude_factor
+                extruder = self.printer.lookup_object('toolhead').get_extruder()
                 if not self.absolute_coord or not self.absolute_extrude:
                     # value relative to position of last move
+                    history_e = self.last_position[3]
                     self.last_position[3] += v
                 else:
                     # value relative to base coordinate position
+                    history_e = 0.
                     self.last_position[3] = v + self.base_position[3]
+                if (self.last_position[3]-(history_e) > 0.000001) and (self.extruder_stepper_dir != 1):
+                    self.extruder_stepper_dir = 1
+                    sync_steppers = extruder.get_sync_steppers().copy()
+                    for name, obj_name in sync_steppers.items():
+                        obj = self.printer.lookup_object(obj_name)
+                        obj.do_sync_advance_move(self.extruder_stepper_dir)
+                elif (self.last_position[3]-(history_e) < -0.000001) and (self.extruder_stepper_dir != -1):
+                    self.extruder_stepper_dir = -1
+                    sync_steppers = extruder.get_sync_steppers().copy()
+                    for name, obj_name in sync_steppers.items():
+                        obj = self.printer.lookup_object(obj_name)
+                        obj.do_sync_advance_move(self.extruder_stepper_dir)
+                    
             if 'F' in params:
                 gcode_speed = float(params['F'])
                 if gcode_speed <= 0.:
-                    raise gcmd.error("Invalid speed in '%s'"
-                                     % (gcmd.get_commandline(),))
+                    raise gcmd.error("""{"code":"key272": "msg":"Invalid speed in '%s'", "values":["%s"]}"""
+                                     % (gcmd.get_commandline(),gcmd.get_commandline()))
                 self.speed = gcode_speed * self.speed_factor
         except ValueError as e:
-            raise gcmd.error("Unable to parse move '%s'"
-                             % (gcmd.get_commandline(),))
+            raise gcmd.error("""{"code":"key273": "msg":"Unable to parse move '%s'", "values":["%s"]}"""
+                             % (gcmd.get_commandline(),gcmd.get_commandline()))
         self.move_with_transform(self.last_position, self.speed)
     # G-Code coordinate manipulation
     def cmd_G20(self, gcmd):
@@ -223,7 +240,7 @@ class GCodeMove:
         state_name = gcmd.get('NAME', 'default')
         state = self.saved_states.get(state_name)
         if state is None:
-            raise gcmd.error("Unknown g-code state: %s" % (state_name,))
+            raise gcmd.error("""{"code":"key274", "msg": "Unknown g-code state: %s", "values":["%s"]}""" % (state_name, state_name))
         # Restore state
         self.absolute_coord = state['absolute_coord']
         self.absolute_extrude = state['absolute_extrude']
@@ -245,7 +262,7 @@ class GCodeMove:
     def cmd_GET_POSITION(self, gcmd):
         toolhead = self.printer.lookup_object('toolhead', None)
         if toolhead is None:
-            raise gcmd.error("Printer not ready")
+            raise gcmd.error("""{"code": "key283", "msg": ""Printer not ready"}""")
         kin = toolhead.get_kinematics()
         steppers = kin.get_steppers()
         mcu_pos = " ".join(["%s:%d" % (s.get_name(), s.get_mcu_position())

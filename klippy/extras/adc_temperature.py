@@ -65,8 +65,8 @@ class HelperTemperatureDiagnostics:
         tempstr = "?"
         try:
             last_temp = self.calc_temp_cb(last_value)
-            tempstr = "%.3f" % (last_temp,)
-        except e:
+            tempstr = "%.3f" % (last_temp,)    
+        except Exception as e:
             logging.exception("Error in calc_temp callback")
         return ("Sensor '%s' temperature %s not in range %.3f:%.3f"
                 % (self.name, tempstr, self.min_temp, self.max_temp))
@@ -88,7 +88,7 @@ class LinearInterpolate:
                 last_value = value
                 continue
             if key <= last_key:
-                raise ValueError("duplicate value")
+                raise ValueError("""{"code":"key26", "msg":"duplicate value", "values": []}""")
             gain = (value - last_value) / (key - last_key)
             offset = last_value - last_key * gain
             if self.slopes and self.slopes[-1] == (gain, offset):
@@ -98,7 +98,7 @@ class LinearInterpolate:
             self.keys.append(key)
             self.slopes.append((gain, offset))
         if not self.keys:
-            raise ValueError("need at least two samples")
+           raise ValueError("""{"code":"key27", "msg":"need at least two samples", "values": []}""")
         self.keys.append(9999999999999.)
         self.slopes.append(self.slopes[-1])
     def interpolate(self, key):
@@ -136,8 +136,8 @@ class LinearVoltage:
         try:
             li = LinearInterpolate(samples)
         except ValueError as e:
-            raise config.error("adc_temperature %s in heater %s" % (
-                str(e), config.get_name()))
+          raise config.error("""{"code":"key28", "msg":"adc_temperature %s in heater %s", "values": ["%s", "%s"]}""" % (
+                str(e), config.get_name(), str(e), config.get_name()))
         self.calc_temp = li.interpolate
         self.calc_adc = li.reverse_interpolate
 
@@ -168,8 +168,8 @@ class LinearResistance:
         try:
             self.li = LinearInterpolate([(r, t) for t, r in samples])
         except ValueError as e:
-            raise config.error("adc_temperature %s in heater %s" % (
-                str(e), config.get_name()))
+           raise config.error("""{"code":"key28", "msg":"adc_temperature %s in heater %s", "values": ["%s", "%s"]}""" % (
+                str(e), config.get_name(), str(e), config.get_name()))
     def calc_temp(self, adc):
         # Calculate temperature from adc
         adc = max(.00001, min(.99999, adc))

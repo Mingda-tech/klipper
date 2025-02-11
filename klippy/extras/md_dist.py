@@ -22,6 +22,7 @@ from clocksync import SecondarySync
 
 STREAM_BUFFER_LIMIT_DEFAULT = 100
 STREAM_TIMEOUT = 2.0
+probe_object_name = "probe"
 
 class MD_Dist_Probe:
     def __init__(self, config):
@@ -83,6 +84,9 @@ class MD_Dist_Probe:
         self.enable_temp_compensate = config.getboolean(
             "enable_temp_compensate", True
         )
+        self.z_virtual_endstop = config.getboolean(
+            "z_virtual_endstop", True
+        )
 
         # Load models
         self.model = None
@@ -130,8 +134,13 @@ class MD_Dist_Probe:
         self.cmd_queue = self._mcu.alloc_command_queue()
         self.mcu_probe = MD_Dist_Endstop_Wrapper(self)
 
+        global probe_object_name
+        probe_object_name = config.get('probe_object', "probe")
         # Register z_virtual_endstop
-        self.printer.lookup_object("pins").register_chip("probe", self)
+        if self.z_virtual_endstop:
+            self.printer.lookup_object("pins").register_chip(
+                probe_object_name, self
+            )
         # Register event handlers
         self.printer.register_event_handler(
             "klippy:connect",
@@ -173,21 +182,30 @@ class MD_Dist_Probe:
             self.cmd_MD_DIST_ESTIMATE_BACKLASH,
             desc=self.cmd_MD_DIST_ESTIMATE_BACKLASH_help
         )
-        self.gcode.register_command(
-            "PROBE",
-            self.cmd_PROBE,
-            desc=self.cmd_PROBE_help
-        )
-        self.gcode.register_command(
-            "PROBE_ACCURACY",
-            self.cmd_PROBE_ACCURACY,
-            desc=self.cmd_PROBE_ACCURACY_help
-        )
-        self.gcode.register_command(
-            "Z_OFFSET_APPLY_PROBE",
-            self.cmd_Z_OFFSET_APPLY_PROBE,
-            desc=self.cmd_Z_OFFSET_APPLY_PROBE_help
-        )
+        if self.z_virtual_endstop:
+            self.gcode.register_command(
+                "PROBE",
+                self.cmd_PROBE,
+                desc=self.cmd_PROBE_help
+            )
+            self.gcode.register_command(
+                "PROBE_ACCURACY",
+                self.cmd_PROBE_ACCURACY,
+                desc=self.cmd_PROBE_ACCURACY_help
+            )
+            self.gcode.register_command(
+                "Z_OFFSET_APPLY_PROBE",
+                self.cmd_Z_OFFSET_APPLY_PROBE,
+                desc=self.cmd_Z_OFFSET_APPLY_PROBE_help
+            )
+        else:
+            # If z_virtual_endstop is not used,
+            # the z_offset_apply of md_dist needs to be preserved
+            self.gcode.register_command(
+                "Z_OFFSET_APPLY_MD_DIST",
+                self.cmd_Z_OFFSET_APPLY_PROBE,
+                desc=self.cmd_Z_OFFSET_APPLY_PROBE_help
+            )
 
     # Event handlers
     def _handle_connect(self):
@@ -355,29 +373,55 @@ class MD_Dist_Probe:
 
     # Calibration routines
     def _start_calibration(self, gcmd):
-        allow_faulty = gcmd.get_int("ALLOW_FAULTY_COORDINATE", 0) != 0
-        if gcmd.get("SKIP_MANUAL_PROBE", None) is not None:
-            kin = self.toolhead.get_kinematics()
-            kin_spos = {
-                s.get_name(): s.get_commanded_position() \
-                    for s in kin.get_steppers()
-            }
-            kin_pos = kin.calc_position(kin_spos)
-            if self._is_faulty_coordinate(kin_pos[0], kin_pos[1]):
-                msg = "Calibrating within a faulty area"
-                if not allow_faulty:
-                    raise gcmd.error(msg)
-                else:
-                    gcmd.respond_raw("!! " + msg + "\n")
-            self._calibrate(gcmd, kin_pos, False)
+        if self.z_virtual_endstop:
+            allow_faulty = gcmd.get_int("ALLOW_FAULTY_COORDINATE", 0) != 0
+            if gcmd.get("SKIP_MANUAL_PROBE", None) is not None:
+                kin = self.toolhead.get_kinematics()
+                kin_spos = {
+                    s.get_name(): s.get_commanded_position() \
+                        for s in kin.get_steppers()
+                }
+                kin_pos = kin.calc_position(kin_spos)
+                if self._is_faulty_coordinate(kin_pos[0], kin_pos[1]):
+                    msg = "Calibrating within a faulty area"
+                    if not allow_faulty:
+                        raise gcmd.error(msg)
+                    else:
+                        gcmd.respond_raw("!! " + msg + "\n")
+                self._calibrate(gcmd, kin_pos, False)
+            else:
+                curtime = self.printer.get_reactor().monotonic()
+                kin_status = self.toolhead.get_status(curtime)
+                if "xy" not in kin_status["homed_axes"]:
+                    raise self.printer.command_error(
+                        "Must home X and Y before calibration"
+                    )
+
+                kin_pos = self.toolhead.get_position()
+                if self._is_faulty_coordinate(kin_pos[0], kin_pos[1]):
+                    msg = "Calibrating within a faulty area"
+                    if not allow_faulty:
+                        raise gcmd.error(msg)
+                    else:
+                        gcmd.respond_raw("!! " + msg + "\n")
+
+                forced_z = False
+                if 'z' not in kin_status["homed_axes"]:
+                    self.toolhead.get_last_move_time()
+                    pos = self.toolhead.get_position()
+                    pos[2] = kin_status["axis_maximum"][2] - 1.0
+                    self.toolhead.set_position(pos, homing_axes=[2])
+                    forced_z = True
+
+                cb = lambda kin_pos: self._calibrate(gcmd, kin_pos, forced_z)
+                manual_probe.ManualProbeHelper(self.printer, gcmd, cb)
         else:
             curtime = self.printer.get_reactor().monotonic()
             kin_status = self.toolhead.get_status(curtime)
-            if "xy" not in kin_status["homed_axes"]:
+            if "xyz" not in kin_status["homed_axes"]:
                 raise self.printer.command_error(
-                    "Must home X and Y before calibration"
+                    "Must home before calibration"
                 )
-
             kin_pos = self.toolhead.get_position()
             if self._is_faulty_coordinate(kin_pos[0], kin_pos[1]):
                 msg = "Calibrating within a faulty area"
@@ -385,17 +429,10 @@ class MD_Dist_Probe:
                     raise gcmd.error(msg)
                 else:
                     gcmd.respond_raw("!! " + msg + "\n")
-
             forced_z = False
-            if 'z' not in kin_status["homed_axes"]:
-                self.toolhead.get_last_move_time()
-                pos = self.toolhead.get_position()
-                pos[2] = kin_status["axis_maximum"][2] - 1.0
-                self.toolhead.set_position(pos, homing_axes=[2])
-                forced_z = True
+            # kin_pos[2] = self.cal_nozzle_z
+            self._calibrate(gcmd, kin_pos, forced_z)
 
-            cb = lambda kin_pos: self._calibrate(gcmd, kin_pos, forced_z)
-            manual_probe.ManualProbeHelper(self.printer, gcmd, cb)
     def _calibrate(self, gcmd, kin_pos, forced_z):
         if kin_pos is None:
             if forced_z:
@@ -753,9 +790,12 @@ class MD_Dist_Probe:
         model = None
         if self.model is not None:
             model = self.model.name
+        x_offset, y_offset, z_offset = self.get_offsets()
         return {
-            "last_sample": self.last_sample,
-            "model": model,
+            'name': self.name,
+            'last_sample': self.last_sample,
+            'model': model,
+            'offsets': {'x': x_offset, 'y': y_offset, 'z': z_offset}
         }
 
     # Webhook handlers
@@ -1350,6 +1390,8 @@ class MD_Dist_Probe_Wrapper:
         return self.md_dist.get_lift_speed(gcmd)
     def run_probe(self, gcmd):
         return self.md_dist.run_probe(gcmd)
+    def get_status(self, eventtime):
+        return self.md_dist.get_status(eventtime)
 
 class MD_Dist_Temp_Wrapper:
     def __init__(self, md_dist):
@@ -1561,6 +1603,7 @@ class MD_Dist_Mesh_Helper:
         self.overscan = config.getfloat("mesh_overscan", -1, minval=0)
         self.cluster_size = config.getfloat("mesh_cluster_size", 1, minval=0)
         self.runs = config.getint("mesh_runs", 1, minval=1)
+        self.rewrite_command = config.getboolean('rewrite_command', True)
 
         self.faulty_regions = []
         for i in list(range(1, 100, 1)):
@@ -1581,14 +1624,15 @@ class MD_Dist_Mesh_Helper:
         self.gcode = self.md_dist.printer.lookup_object(
             "gcode"
         )
-        self.prev_gcmd = self.gcode.register_command(
-            "BED_MESH_CALIBRATE", None
-        )
-        self.gcode.register_command(
-            "BED_MESH_CALIBRATE",
-            self.cmd_BED_MESH_CALIBRATE,
-            desc=self.cmd_BED_MESH_CALIBRATE_help
-        )
+        if self.rewrite_command:
+            self.prev_gcmd = self.gcode.register_command(
+                "BED_MESH_CALIBRATE", None
+            )
+            self.gcode.register_command(
+                "BED_MESH_CALIBRATE",
+                self.cmd_BED_MESH_CALIBRATE,
+                desc=self.cmd_BED_MESH_CALIBRATE_help
+            )
 
         if self.overscan < 0:
             printer = self.md_dist.printer
@@ -1602,8 +1646,8 @@ class MD_Dist_Mesh_Helper:
         method = gcmd.get("METHOD", "md_dist").lower()
         if method == "md_dist":
             self.calibrate(gcmd)
-        else:
-            self.prev_gcmd(gcmd)
+        # else:
+        #     self.prev_gcmd(gcmd)
 
     def _handle_mcu_identify(self):
         # Auto determine a safe overscan amount
@@ -1965,7 +2009,7 @@ class MD_Dist_Mesh_Helper:
             for i, line in enumerate(matrix):
                 matrix[i] = [z-z_offset for z in line]
 
-        params = self.bm.bmc.mesh_config
+        params = dict(self.bm.bmc.mesh_config)
         params["min_x"] = self.min_x
         params["max_x"] = self.max_x
         params["min_y"] = self.min_y
@@ -2035,7 +2079,7 @@ def median(samples):
 
 def load_config(config):
     md_dist = MD_Dist_Probe(config)
-    config.get_printer().add_object("probe", MD_Dist_Probe_Wrapper(md_dist))
+    config.get_printer().add_object(probe_object_name, MD_Dist_Probe_Wrapper(md_dist))
     temp = MD_Dist_Temp_Wrapper(md_dist)
     config.get_printer().add_object("temperature_sensor MD_DIST", temp)
     pheaters = md_dist.printer.load_object(config, "heaters")

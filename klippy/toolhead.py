@@ -470,6 +470,7 @@ class ToolHead:
         if move.axes_d[3]:
             self.extruder.check_move(move)
         self.commanded_pos[:] = move.end_pos
+
         self.lookahead.add_move(move)
         if self.print_time > self.need_check_pause:
             self._check_pause()

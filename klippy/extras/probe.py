@@ -311,7 +311,7 @@ class ProbeSessionHelper:
         toolhead = self.printer.lookup_object('toolhead')
         curtime = self.printer.get_reactor().monotonic()
         if 'z' not in toolhead.get_status(curtime)['homed_axes']:
-            raise self.printer.command_error("Must home before probe")
+             raise self.printer.command_error("""{"code":"key96", "msg": "Must home before probe", "values": []}""")
         pos = toolhead.get_position()
         pos[2] = self.z_position
         try:
@@ -399,8 +399,8 @@ class ProbePointsHelper:
         self.manual_results = []
     def minimum_points(self,n):
         if len(self.probe_points) < n:
-            raise self.printer.config_error(
-                "Need at least %d probe points for %s" % (n, self.name))
+           raise self.printer.config_error(
+                """{"code":"key98", "msg": "Need at least %d probe points for %s", "values": [%d, "%s"]}""" % (n, self.name, n, self.name))
     def update_probe_points(self, points, min_points):
         self.probe_points = points
         self.minimum_points(min_points)
@@ -449,8 +449,7 @@ class ProbePointsHelper:
         self.lift_speed = probe.get_probe_params(gcmd)['lift_speed']
         self.probe_offsets = probe.get_offsets()
         if self.horizontal_move_z < self.probe_offsets[2]:
-            raise gcmd.error("horizontal_move_z can't be less than"
-                             " probe's z_offset")
+            raise gcmd.error("""{"code": "key15", "msg": "horizontal_move_z can't be less than probe's z_offset"}""")
         probe_session = probe.start_probe_session(gcmd)
         probe_num = 0
         while 1:
