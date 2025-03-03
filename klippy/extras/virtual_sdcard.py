@@ -3,7 +3,7 @@
 # Copyright (C) 2018-2024  Kevin O'Connor <kevin@koconnor.net>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, sys, logging, io
+import os, sys, logging, io, configparser
 
 VALID_GCODE_EXTS = ['gcode', 'g', 'gco']
 
@@ -46,6 +46,17 @@ class VirtualSD:
         self.gcode.register_command(
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
+        # 添加打印状态保存相关的变量
+        self.cmd_counter = 0
+        self.save_state_threshold = 30
+        config_path = os.path.expanduser('~/printer_data/config')
+        self.state_file_1 = os.path.join(config_path, 'print_state.cfg')
+        self.state_file_2 = os.path.join(config_path, 'print_state_temp.cfg')
+        self.last_saved_to_first = True
+        # 添加恢复打印命令
+        self.gcode.register_command(
+            "RESTORE_PRINT", self.cmd_RESTORE_PRINT,
+            desc=self.cmd_RESTORE_PRINT_help)
     def handle_shutdown(self):
         if self.work_timer is not None:
             self.must_pause_work = True
@@ -293,6 +304,14 @@ class VirtualSD:
                     return self.reactor.NEVER
                 lines = []
                 partial_input = ""
+            # 检查是否需要保存状态
+            self.cmd_counter += 1
+            if self.cmd_counter >= self.save_state_threshold:
+                self.save_print_state()
+                self.cmd_counter = 0
+            # 检查是否是换层命令 (M73)
+            if line.strip().startswith('M73'):
+                self.save_print_state()
         logging.info("Exiting SD card print (position %d)", self.file_position)
         self.work_timer = None
         self.cmd_from_sd = False
@@ -303,6 +322,254 @@ class VirtualSD:
         else:
             self.print_stats.note_complete()
         return self.reactor.NEVER
+    def save_print_state(self):
+        if self.current_file is None:
+            return
+        
+        config = configparser.ConfigParser()
+        
+        # 基本打印状态
+        config['print_state'] = {
+            'file_path': str(self.file_path()),
+            'file_position': str(self.file_position),
+            'file_size': str(self.file_size),
+            'progress': '{:.2f}'.format(self.progress())
+        }
+        
+        # 获取打印机状态
+        try:
+            # 获取gcode_move对象
+            gcode_move = self.printer.lookup_object('gcode_move')
+            
+            if gcode_move:
+                status = gcode_move.get_status(self.reactor.monotonic())
+                
+                # 获取相对坐标
+                gcode_position = status['gcode_position']
+                config['position'] = {
+                    'x': '{:.2f}'.format(gcode_position[0]),
+                    'y': '{:.2f}'.format(gcode_position[1]),
+                    'z': '{:.2f}'.format(gcode_position[2]),
+                    'e': '{:.2f}'.format(gcode_position[3])
+                }
+                
+                # 保存坐标模式
+                config['motion_mode'] = {
+                    'absolute_coordinates': str(status['absolute_coordinates']),
+                    'absolute_extrude': str(status['absolute_extrude'])
+                }
+                
+                # 保存速度和挤出相关设置
+                config['speed'] = {
+                    'speed': '{:.2f}'.format(status['speed']),
+                    'speed_factor': '{:.2f}'.format(status['speed_factor']),
+                    'extrude_factor': '{:.2f}'.format(status['extrude_factor'])
+                }
+            
+            # 从toolhead获取当前活跃挤出头信息
+            toolhead = self.printer.lookup_object('toolhead')
+            if toolhead:
+                config['extruder'] = {}
+                active_extruder = toolhead.get_extruder().get_name()
+                config['extruder']['active_extruder'] = str(active_extruder)
+                
+                # 获取打印头最大速度和加速度
+                status = toolhead.get_status(self.reactor.monotonic())
+                config['motion_limits'] = {
+                    'max_velocity': '{:.2f}'.format(status['max_velocity']),
+                    'max_accel': '{:.2f}'.format(status['max_accel']),
+                    'square_corner_velocity': '{:.2f}'.format(status['square_corner_velocity'])
+                }
+                    
+            # 获取所有挤出头温度
+            config['temperatures'] = {}
+            for i in range(2):  # 最多支持2个挤出头
+                extruder_name = 'extruder' if i == 0 else f'extruder{i}'
+                extruder = self.printer.lookup_object(extruder_name, None)
+                if extruder:
+                    status = extruder.get_status(self.reactor.monotonic())
+                    # 只保存目标温度
+                    if status['target'] > 0:  # 只在有目标温度时保存
+                        config['temperatures'][extruder_name] = '{:.2f}'.format(status['target'])
+                    
+            # 获取热床温度
+            heater_bed = self.printer.lookup_object('heater_bed', None)
+            if heater_bed:
+                status = heater_bed.get_status(self.reactor.monotonic())
+                # 只保存目标温度
+                if status['target'] > 0:  # 只在有目标温度时保存
+                    config['temperatures']['bed'] = '{:.2f}'.format(status['target'])
+            
+            # 获取风扇速度
+            config['fans'] = {}
+            # 主风扇
+            fan = self.printer.lookup_object('fan', None)
+            if fan:
+                config['fans']['fan'] = '{:.2f}'.format(fan.get_status(self.reactor.monotonic())['speed'])
+            # 热端风扇
+            hotend_fan = self.printer.lookup_object('heater_fan Hotend_Fan0', None)
+            if hotend_fan:
+                config['fans']['hotend_fan'] = '{:.2f}'.format(hotend_fan.get_status(self.reactor.monotonic())['speed'])
+            # 模型风扇
+            nozzle_fan = self.printer.lookup_object('fan_generic Nozzle_Fan0', None)
+            if nozzle_fan:
+                config['fans']['nozzle_fan'] = '{:.2f}'.format(nozzle_fan.get_status(self.reactor.monotonic())['speed'])
+                
+        except:
+            logging.exception("Error getting printer state data")
+        
+        # 交替保存到两个文件
+        save_file = self.state_file_1 if self.last_saved_to_first else self.state_file_2
+        try:
+            with open(save_file, 'w') as f:
+                config.write(f)
+            self.last_saved_to_first = not self.last_saved_to_first
+        except:
+            logging.exception("Error saving print state")
+    # 添加恢复打印的命令处理函数
+    cmd_RESTORE_PRINT_help = "Restore the previous print after power loss"
+    def cmd_RESTORE_PRINT(self, gcmd):
+        if self.work_timer is not None:
+            logging.info("RESTORE_PRINT: Already printing")
+            raise gcmd.error("Already printing")
+        
+        logging.info("RESTORE_PRINT: Starting restore process")
+        
+        # 读取状态文件
+        config = configparser.ConfigParser()
+        state_file = None
+        state_data = None
+        
+        try:
+            # 先尝试读取第一个文件
+            logging.info("RESTORE_PRINT: Trying to read first state file: %s", self.state_file_1)
+            config.read(self.state_file_1)
+            if 'print_state' in config:
+                state_file = self.state_file_1
+                state_data = config
+                logging.info("RESTORE_PRINT: Successfully read first state file")
+        except:
+            logging.exception("RESTORE_PRINT: Error reading first state file")
+        
+        if state_data is None:
+            try:
+                # 如果第一个文件无效，尝试读取第二个文件
+                logging.info("RESTORE_PRINT: Trying to read second state file: %s", self.state_file_2)
+                config = configparser.ConfigParser()
+                config.read(self.state_file_2)
+                if 'print_state' in config:
+                    state_file = self.state_file_2
+                    state_data = config
+                    logging.info("RESTORE_PRINT: Successfully read second state file")
+            except:
+                logging.exception("RESTORE_PRINT: Error reading second state file")
+        
+        if state_data is None:
+            logging.info("RESTORE_PRINT: No valid state file found")
+            raise gcmd.error("No valid print state found")
+
+        try:
+            # 获取打印状态
+            print_state = state_data['print_state']
+            file_path = print_state['file_path']
+            file_position = int(print_state['file_position'])
+            logging.info("RESTORE_PRINT: Found state - file: %s, position: %d", file_path, file_position)
+
+            # 1. 先恢复温度
+            if 'temperatures' in state_data:
+                temps = state_data['temperatures']
+                if 'extruder' in temps:
+                    self.gcode.run_script_from_command(f"M104 S{float(temps['extruder'])}")
+                if 'bed' in temps:
+                    self.gcode.run_script_from_command(f"M140 S{float(temps['bed'])}")
+                logging.info("RESTORE_PRINT: Temperature commands sent")
+
+            # 2. 执行回零
+            self.gcode.run_script_from_command("G28")
+            logging.info("RESTORE_PRINT: Homing completed")
+
+            # 3. 等待温度
+            if 'temperatures' in state_data:
+                temps = state_data['temperatures']
+                if 'extruder' in temps:
+                    self.gcode.run_script_from_command(f"M109 S{float(temps['extruder'])}")
+                if 'bed' in temps:
+                    self.gcode.run_script_from_command(f"M190 S{float(temps['bed'])}")
+                logging.info("RESTORE_PRINT: Temperature reached")
+
+            # 4. 加载文件
+            logging.info("RESTORE_PRINT: Loading file: %s", file_path)
+            f = io.open(file_path, 'r', newline='')
+            f.seek(0, os.SEEK_END)
+            fsize = f.tell()
+            f.seek(file_position)
+            self.current_file = f
+            self.file_position = file_position
+            self.file_size = fsize
+            self.print_stats.set_current_file(file_path)
+            logging.info("RESTORE_PRINT: File loaded and positioned")
+
+            # 5. 恢复打印设置
+            if 'motion_mode' in state_data:
+                motion = state_data['motion_mode']
+                if motion.get('absolute_coordinates', 'true').lower() == 'true':
+                    self.gcode.run_script_from_command("G90")
+                else:
+                    self.gcode.run_script_from_command("G91")
+                if motion.get('absolute_extrude', 'true').lower() == 'true':
+                    self.gcode.run_script_from_command("M82")
+                else:
+                    self.gcode.run_script_from_command("M83")
+
+            # 6. 恢复位置
+            if 'position' in state_data:
+                pos = state_data['position']
+                # 设置绝对坐标模式
+                self.gcode.run_script_from_command("G90")
+                # 先移动到Z轴位置
+                self.gcode.run_script_from_command(f"G1 Z{pos['z']} F600")
+                # 移动到XY位置
+                self.gcode.run_script_from_command(f"G1 X{pos['x']} Y{pos['y']} F3000")
+                # 先设置E轴位置为0
+                self.gcode.run_script_from_command("G92 E0")
+                logging.info("RESTORE_PRINT: Position restored to X:%.2f Y:%.2f Z:%.2f E:%.2f", 
+                           float(pos['x']), float(pos['y']), float(pos['z']), float(pos['e']))
+
+            # 7. 恢复速度设置
+            if 'speed' in state_data:
+                speed = state_data['speed']
+                if 'speed_factor' in speed:
+                    speed_value = float(speed['speed_factor']) * 50
+                    self.gcode.run_script_from_command(f"M220 S{speed_value}")
+                if 'extrude_factor' in speed:
+                    extrude_value = float(speed['extrude_factor']) * 100
+                    self.gcode.run_script_from_command(f"M221 S{extrude_value}")
+
+            # 8. 恢复风扇设置
+            if 'fans' in state_data:
+                fans = state_data['fans']
+                for fan_name, speed in fans.items():
+                    if fan_name == 'nozzle_fan':
+                        self.gcode.run_script_from_command(f"M106 S{int(float(speed)*255)}")
+
+            # 9. 开始打印
+            logging.info("RESTORE_PRINT: Starting print")
+            self.print_stats.note_start()
+            self.work_timer = self.reactor.register_timer(
+                self.work_handler, self.reactor.NOW)
+            logging.info("RESTORE_PRINT: Print started")
+
+            # 10. 删除状态文件
+            if state_file:
+                try:
+                    os.remove(state_file)
+                    logging.info("RESTORE_PRINT: Removed state file")
+                except:
+                    logging.exception("RESTORE_PRINT: Error removing state file")
+
+        except Exception as e:
+            logging.exception("RESTORE_PRINT: Error during restore process")
+            raise gcmd.error(f"Failed to restore print: {str(e)}")
 
 def load_config(config):
     return VirtualSD(config)
