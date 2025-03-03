@@ -26,13 +26,18 @@ class PrintStateManager:
         self.toolhead = None
         self.gcode_move = None
         self.gcode = None
+        self.virtual_sdcard = None
         
         # 注册事件处理器
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
-        self.printer.register_event_handler("print_stats:printing", self._handle_printing)
-        self.printer.register_event_handler("print_stats:complete", self._handle_print_complete)
-        self.printer.register_event_handler("print_stats:error", self._handle_print_error)
-        self.printer.register_event_handler("print_stats:paused", self._handle_print_paused)
+        self.printer.register_event_handler("idle_timeout:printing", self._handle_printing)
+        self.printer.register_event_handler("idle_timeout:ready", self._handle_print_complete)
+        self.printer.register_event_handler("idle_timeout:idle", self._handle_print_complete)
+        self.printer.register_event_handler("virtual_sdcard:reset_file", self._handle_print_error)
+        
+        # 初始化状态轮询
+        self.last_print_state = None
+        self._state_check_timer = None
         
         # 确保状态文件目录存在
         state_dir = os.path.dirname(self.state_file)
@@ -47,6 +52,17 @@ class PrintStateManager:
         """初始化组件连接"""
         try:
             self.print_stats = self.printer.lookup_object('print_stats')
+            if self.print_stats is None:
+                logging.error("无法获取print_stats组件")
+                return
+            logging.info("成功获取print_stats组件")
+            
+            self.virtual_sdcard = self.printer.lookup_object('virtual_sdcard')
+            if self.virtual_sdcard is None:
+                logging.error("无法获取virtual_sdcard组件")
+                return
+            logging.info("成功获取virtual_sdcard组件")
+            
             self.toolhead = self.printer.lookup_object('toolhead')
             self.gcode_move = self.printer.lookup_object('gcode_move')
             self.gcode = self.printer.lookup_object('gcode')
@@ -73,6 +89,44 @@ class PrintStateManager:
             logging.info("状态文件写入测试成功")
         except Exception as e:
             logging.error(f"状态文件写入测试失败: {str(e)}")
+    
+    def _start_state_check_timer(self):
+        """启动状态检查定时器"""
+        if self._state_check_timer is not None:
+            return
+        self._state_check_timer = self.reactor.register_timer(
+            self._check_print_state,
+            self.reactor.NOW + 1.0
+        )
+        logging.info("状态检查定时器已启动")
+    
+    def _check_print_state(self, eventtime):
+        """检查打印状态变化"""
+        if self.print_stats is None:
+            return self.reactor.NEVER
+            
+        try:
+            current_state = self.print_stats.get_status(eventtime)['state']
+            
+            if self.last_print_state != current_state:
+                logging.info(f"检测到打印状态变化: {self.last_print_state} -> {current_state}")
+                
+                if current_state == 'printing':
+                    self._handle_printing(eventtime)
+                elif current_state == 'complete':
+                    self._handle_print_complete(eventtime)
+                elif current_state == 'error':
+                    error_msg = self.print_stats.get_status(eventtime).get('message', '')
+                    self._handle_print_error(eventtime)
+                elif current_state == 'paused':
+                    self._handle_print_paused(eventtime)
+                    
+                self.last_print_state = current_state
+                
+        except Exception as e:
+            logging.error(f"检查打印状态失败: {str(e)}")
+            
+        return eventtime + 1.0  # 每秒检查一次状态
     
     def _handle_printing(self, print_time):
         """打印开始处理"""
