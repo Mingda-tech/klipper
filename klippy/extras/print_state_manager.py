@@ -2,6 +2,7 @@ import os
 import json
 import time
 import logging
+import traceback
 
 class PrintStateManager:
     def __init__(self, config):
@@ -76,13 +77,14 @@ class PrintStateManager:
     def _handle_printing(self, print_time):
         """打印开始处理"""
         try:
+            logging.info("收到打印开始事件")
             self.is_printing = True
             self.last_layer = 0
             self.last_z_pos = 0.0
             self.last_save_time = time.time()
             self._start_auto_save_timer()
             self._save_complete_state()
-            logging.info("打印开始，初始化状态并启动自动保存")
+            logging.info(f"打印开始处理完成: is_printing={self.is_printing}")
         except Exception as e:
             logging.error(f"处理打印开始事件失败: {str(e)}")
     
@@ -264,8 +266,9 @@ class PrintStateManager:
     
     def _save_complete_state(self):
         """保存完整打印状态"""
+        logging.info(f"尝试保存状态: is_printing={self.is_printing}")
         if not self.is_printing:
-            logging.debug("未在打印中，跳过状态保存")
+            logging.info("未在打印中，跳过状态保存")
             return
             
         try:
@@ -279,10 +282,13 @@ class PrintStateManager:
                 'filament_state': self._get_filament_state()
             }
             
+            logging.info(f"已收集新状态数据: {json.dumps(new_state, indent=2)}")
+            
             # 读取或创建状态文件
             try:
                 with open(self.state_file, 'r') as f:
                     state = json.load(f)
+                    logging.info("成功读取现有状态文件")
             except (FileNotFoundError, json.JSONDecodeError):
                 logging.info("创建新的状态文件")
                 state = self._create_initial_state()
@@ -295,7 +301,7 @@ class PrintStateManager:
             logging.info(f"状态保存成功: 层={self.last_layer}, Z={self.last_z_pos:.3f}, 进度={new_state['position_state']['progress']:.1%}")
             
         except Exception as e:
-            logging.error(f"保存状态失败: {str(e)}")
+            logging.error(f"保存状态失败: {str(e)}, 详细错误: {traceback.format_exc()}")
     
     def _atomic_save(self, state):
         """原子性保存状态文件"""
