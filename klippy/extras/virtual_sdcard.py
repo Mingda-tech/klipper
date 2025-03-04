@@ -485,7 +485,11 @@ class VirtualSD:
                     self.gcode.run_script_from_command(f"M140 S{float(temps['bed'])}")
                 logging.info("RESTORE_PRINT: Temperature commands sent")
 
-            # 1.5 设置Z坐标值
+            # 2. 设置绝对坐标模式
+            self.gcode.run_script_from_command("G90")  # 设置绝对坐标模式
+            self.gcode.run_script_from_command("M82")  # 设置绝对挤出模式
+            
+            # 3. 设置Z坐标值
             if 'position' in state_data and 'extruder' in state_data:
                 try:
                     pos = state_data['position']
@@ -508,10 +512,10 @@ class VirtualSD:
                 except Exception as e:
                     logging.exception("RESTORE_PRINT: Error setting Z position")
 
-                self.gcode.run_script_from_command(f"G91")
-                self.gcode.run_script_from_command(f"G1 Z+5 F600")
-                self.gcode.run_script_from_command(f"G90")
-                logging.info(f"lift Z position to +5")
+                # self.gcode.run_script_from_command(f"G91")
+                # self.gcode.run_script_from_command(f"G1 Z+5 F600")
+                # self.gcode.run_script_from_command(f"G90")
+                # logging.info(f"lift Z position to +5")
                 
                 if active_extruder == 'extruder1':  # 右头
                     self.gcode.run_script_from_command(f"T1")
@@ -560,10 +564,10 @@ class VirtualSD:
                 pos = state_data['position']
                 # 设置绝对坐标模式
                 self.gcode.run_script_from_command("G90")
-                # 先移动到Z轴位置
-                self.gcode.run_script_from_command(f"G1 Z{pos['z']} F600")
-                # 移动到XY位置
+                # 先移动到XY轴位置
                 self.gcode.run_script_from_command(f"G1 X{pos['x']} Y{pos['y']} F3000")
+                # 移动到Z轴位置
+                self.gcode.run_script_from_command(f"G1 Z{pos['z']} F600")
                 # 先设置E轴位置为0
                 self.gcode.run_script_from_command("G92 E0")
                 logging.info("RESTORE_PRINT: Position restored to X:%.2f Y:%.2f Z:%.2f E:%.2f", 
