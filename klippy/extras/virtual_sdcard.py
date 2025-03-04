@@ -511,10 +511,14 @@ class VirtualSD:
                 self.gcode.run_script_from_command(f"G1 Z+5 F600")
                 self.gcode.run_script_from_command(f"G90")
                 logging.info(f"lift Z position to +5")
-            
+                
+                if active_extruder == 'extruder1':  # 右头
+                    self.gcode.run_script_from_command(f"T1")
+
             # 2. 执行回零
             self.gcode.run_script_from_command(f"G1 F6000")
-            self.gcode.run_script_from_command("G28 XY")
+            self.gcode.run_script_from_command("G28 X")
+            self.gcode.run_script_from_command("G28 Y")
             logging.info("RESTORE_PRINT: Homing completed")
 
             # 3. 等待温度
