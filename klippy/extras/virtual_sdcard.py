@@ -504,7 +504,7 @@ class VirtualSD:
                     
                     # 根据活跃挤出头设置Z坐标
                     if active_extruder == 'extruder1':  # 右头
-                        z_pos -= e1_zoffset
+                        z_pos += e1_zoffset
                     
                     # 设置当前Z坐标值
                     self.gcode.run_script_from_command(f"SET_KINEMATIC_POSITION Z={z_pos}")
