@@ -48,7 +48,7 @@ class VirtualSD:
             desc=self.cmd_SDCARD_PRINT_FILE_help)
         # 添加打印状态保存相关的变量
         self.cmd_counter = 0
-        self.save_state_threshold = 30
+        self.save_state_threshold = 50
         config_path = os.path.expanduser('~/printer_data/config')
         self.state_file_1 = os.path.join(config_path, 'print_state.cfg')
         self.state_file_2 = os.path.join(config_path, 'print_state_temp.cfg')
@@ -484,8 +484,35 @@ class VirtualSD:
                     self.gcode.run_script_from_command(f"M140 S{float(temps['bed'])}")
                 logging.info("RESTORE_PRINT: Temperature commands sent")
 
+            # 1.5 设置Z坐标值
+            if 'position' in state_data and 'extruder' in state_data:
+                try:
+                    pos = state_data['position']
+                    active_extruder = state_data['extruder']['active_extruder']
+                    z_pos = float(pos['z'])
+                    
+                    # 获取Variables对象
+                    variables = self.printer.lookup_object('save_variables').get_status()
+                    e1_zoffset = float(variables['variables'].get('e1_zoffset', 0))
+                    
+                    # 根据活跃挤出头设置Z坐标
+                    if active_extruder == 'extruder1':  # 右头
+                        z_pos += e1_zoffset
+                    
+                    # 设置当前Z坐标值
+                    self.gcode.run_script_from_command(f"SET_KINEMATIC_POSITION Z={z_pos}")
+                    logging.info(f"RESTORE_PRINT: Set Z position to {z_pos} for {active_extruder}")
+                except Exception as e:
+                    logging.exception("RESTORE_PRINT: Error setting Z position")
+
+                self.gcode.run_script_from_command(f"G91")
+                self.gcode.run_script_from_command(f"G1 Z+5 F600")
+                self.gcode.run_script_from_command(f"G90")
+                logging.info(f"lift Z position to +5")
+            
             # 2. 执行回零
-            self.gcode.run_script_from_command("G28")
+            self.gcode.run_script_from_command(f"G1 F6000")
+            self.gcode.run_script_from_command("G28 XY")
             logging.info("RESTORE_PRINT: Homing completed")
 
             # 3. 等待温度
