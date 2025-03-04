@@ -492,8 +492,10 @@ class VirtualSD:
                     z_pos = float(pos['z'])
                     
                     # 获取Variables对象
-                    variables = self.printer.lookup_object('save_variables').get_status()
-                    e1_zoffset = float(variables['variables'].get('e1_zoffset', 0))
+                    save_variables = self.printer.lookup_object('save_variables')
+                    status = save_variables.get_status(self.printer.get_reactor().monotonic())
+                    variables = status.get('variables', {})
+                    e1_zoffset = float(variables.get('e1_zoffset', 0))
                     
                     # 根据活跃挤出头设置Z坐标
                     if active_extruder == 'extruder1':  # 右头
