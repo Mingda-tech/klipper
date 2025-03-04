@@ -504,7 +504,7 @@ class VirtualSD:
                     
                     # 根据活跃挤出头设置Z坐标
                     if active_extruder == 'extruder1':  # 右头
-                        z_pos += e1_zoffset
+                        z_pos -= e1_zoffset
                     
                     # 设置当前Z坐标值
                     self.gcode.run_script_from_command(f"SET_KINEMATIC_POSITION Z={z_pos}")
@@ -512,10 +512,11 @@ class VirtualSD:
                 except Exception as e:
                     logging.exception("RESTORE_PRINT: Error setting Z position")
 
-                # self.gcode.run_script_from_command(f"G91")
-                # self.gcode.run_script_from_command(f"G1 Z+5 F600")
-                # self.gcode.run_script_from_command(f"G90")
-                # logging.info(f"lift Z position to +5")
+                self.gcode.run_script_from_command(f"G91")
+                self.gcode.run_script_from_command(f"G1 Z+10 F600")
+                self.gcode.run_script_from_command(f"M400")
+                self.gcode.run_script_from_command(f"G90")
+                logging.info(f"lift Z position to +10")
                 
                 if active_extruder == 'extruder1':  # 右头
                     self.gcode.run_script_from_command(f"T1")
