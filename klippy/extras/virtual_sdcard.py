@@ -479,6 +479,7 @@ class VirtualSD:
             if 'temperatures' in state_data:
                 temps = state_data['temperatures']
                 if 'extruder' in temps:
+                    self.gcode.run_script_from_command(f"M109 S80")
                     self.gcode.run_script_from_command(f"M104 S{float(temps['extruder'])}")
                 if 'bed' in temps:
                     self.gcode.run_script_from_command(f"M140 S{float(temps['bed'])}")
