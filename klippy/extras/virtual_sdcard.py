@@ -402,27 +402,49 @@ class VirtualSD:
             
             # 获取风扇速度
             config['fans'] = {}
-            # 主风扇
-            fan = self.printer.lookup_object('fan', None)
-            if fan:
-                config['fans']['fan'] = '{:.2f}'.format(fan.get_status(self.reactor.monotonic())['speed'])
-            # 热端风扇
-            hotend_fan = self.printer.lookup_object('heater_fan Hotend_Fan0', None)
-            if hotend_fan:
-                config['fans']['hotend_fan'] = '{:.2f}'.format(hotend_fan.get_status(self.reactor.monotonic())['speed'])
-            # 模型风扇
-            nozzle_fan = self.printer.lookup_object('fan_generic Nozzle_Fan0', None)
-            if nozzle_fan:
-                config['fans']['nozzle_fan'] = '{:.2f}'.format(nozzle_fan.get_status(self.reactor.monotonic())['speed'])
+            try:
+                # 获取机箱风扇
+                case_fan = self.printer.lookup_object('fan_generic Case_Fan', None)
+                if case_fan:
+                    fan_status = case_fan.get_status(self.reactor.monotonic())
+                    logging.info(f"SAVE_STATE: Case_Fan status: {fan_status}")
+                    config['fans']['case_fan'] = '{:.2f}'.format(fan_status['speed'])
 
-            nozzle_fan = self.printer.lookup_object('fan_generic Nozzle_Fan1', None)
-            if nozzle_fan:
-                config['fans']['nozzle_fan1'] = '{:.2f}'.format(nozzle_fan.get_status(self.reactor.monotonic())['speed'])
-                
-            auxiliary_fan = self.printer.lookup_object('fan_generic Auxiliary_Cooling_Fan', None)
-            if auxiliary_fan:
-                config['fans']['auxiliary_fan'] = '{:.2f}'.format(auxiliary_fan.get_status(self.reactor.monotonic())['speed'])
-                
+                # 获取CPU风扇
+                cpu_fan = self.printer.lookup_object('temperature_fan CPU_Temperature', None)
+                if cpu_fan:
+                    fan_status = cpu_fan.get_status(self.reactor.monotonic())
+                    logging.info(f"SAVE_STATE: CPU_Fan status: {fan_status}")
+                    config['fans']['cpu_fan'] = '{:.2f}'.format(fan_status['speed'])
+
+                # 获取辅助冷却风扇
+                aux_fan = self.printer.lookup_object('fan_generic Auxiliary_Cooling_Fan', None)
+                if aux_fan:
+                    fan_status = aux_fan.get_status(self.reactor.monotonic())
+                    logging.info(f"SAVE_STATE: Auxiliary_Cooling_Fan status: {fan_status}")
+                    config['fans']['auxiliary_fan'] = '{:.2f}'.format(fan_status['speed'])
+
+                # 获取热端风扇
+                hotend_fans = ['heater_fan Hotend_Fan0', 'heater_fan Hotend_Fan1']
+                for fan_name in hotend_fans:
+                    fan = self.printer.lookup_object(fan_name, None)
+                    if fan:
+                        fan_status = fan.get_status(self.reactor.monotonic())
+                        logging.info(f"SAVE_STATE: {fan_name} status: {fan_status}")
+                        config['fans'][fan_name.replace('heater_fan ', '').lower()] = '{:.2f}'.format(fan_status['speed'])
+
+                # 获取喷嘴风扇
+                nozzle_fans = ['fan_generic Nozzle_Fan0', 'fan_generic Nozzle_Fan1']
+                for fan_name in nozzle_fans:
+                    fan = self.printer.lookup_object(fan_name, None)
+                    if fan:
+                        fan_status = fan.get_status(self.reactor.monotonic())
+                        logging.info(f"SAVE_STATE: {fan_name} status: {fan_status}")
+                        config['fans'][fan_name.replace('fan_generic ', '').lower()] = '{:.2f}'.format(fan_status['speed'])
+
+            except Exception as e:
+                logging.exception("Error getting fan speeds: %s", str(e))
+        
         except:
             logging.exception("Error getting printer state data")
         
@@ -486,11 +508,14 @@ class VirtualSD:
             # 1. 先恢复温度
             if 'temperatures' in state_data:
                 temps = state_data['temperatures']
+                if 'bed' in temps:
+                    self.gcode.run_script_from_command(f"M140 S{float(temps['bed'])}")
                 if 'extruder' in temps:
                     self.gcode.run_script_from_command(f"M109 S80")
                     self.gcode.run_script_from_command(f"M104 S{float(temps['extruder'])}")
-                if 'bed' in temps:
-                    self.gcode.run_script_from_command(f"M140 S{float(temps['bed'])}")
+                if 'extruder1' in temps:
+                    self.gcode.run_script_from_command(f"M109 T1 S80")
+                    self.gcode.run_script_from_command(f"M104 T1 S{float(temps['extruder1'])}")
                 logging.info("RESTORE_PRINT: Temperature commands sent")
 
             # 2. 设置绝对坐标模式
