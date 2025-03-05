@@ -489,10 +489,6 @@ class VirtualSD:
             self.gcode.run_script_from_command("G90")  # 设置绝对坐标模式
             self.gcode.run_script_from_command("M83")  # 设置相对挤出模式
 
-            # 2. 执行回零
-            self.gcode.run_script_from_command("G28 X Y S")
-            logging.info("RESTORE_PRINT: Homing completed")
-            
             # 3. 设置Z坐标值
             if 'position' in state_data and 'extruder' in state_data:
                 try:
@@ -506,8 +502,8 @@ class VirtualSD:
                     variables = status.get('variables', {})
                     e1_zoffset = float(variables.get('e1_zoffset', 0))
                     
-                    # 根据活跃挤出头设置Z坐标
-                    z_pos += 5
+                    # # 根据活跃挤出头设置Z坐标
+                    # z_pos += 5
                     
                     # 设置当前Z坐标值
                     self.gcode.run_script_from_command(f"SET_KINEMATIC_POSITION Z={z_pos}")
@@ -519,6 +515,10 @@ class VirtualSD:
                     self.gcode.run_script_from_command(f"T1 R0")
 
 
+            # 2. 执行回零
+            self.gcode.run_script_from_command("G28 X Y S")
+            logging.info("RESTORE_PRINT: Homing completed")
+            
             # 3. 等待温度
             if 'temperatures' in state_data:
                 temps = state_data['temperatures']
