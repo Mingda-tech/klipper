@@ -487,7 +487,11 @@ class VirtualSD:
 
             # 2. 设置绝对坐标模式
             self.gcode.run_script_from_command("G90")  # 设置绝对坐标模式
-            self.gcode.run_script_from_command("M82")  # 设置绝对挤出模式
+            self.gcode.run_script_from_command("M83")  # 设置相对挤出模式
+
+            # 2. 执行回零
+            self.gcode.run_script_from_command("G28 X Y S")
+            logging.info("RESTORE_PRINT: Homing completed")
             
             # 3. 设置Z坐标值
             if 'position' in state_data and 'extruder' in state_data:
@@ -503,29 +507,17 @@ class VirtualSD:
                     e1_zoffset = float(variables.get('e1_zoffset', 0))
                     
                     # 根据活跃挤出头设置Z坐标
-                    if active_extruder == 'extruder1':  # 右头
-                        z_pos += e1_zoffset
+                    z_pos += 5
                     
                     # 设置当前Z坐标值
                     self.gcode.run_script_from_command(f"SET_KINEMATIC_POSITION Z={z_pos}")
                     logging.info(f"RESTORE_PRINT: Set Z position to {z_pos} for {active_extruder}")
                 except Exception as e:
                     logging.exception("RESTORE_PRINT: Error setting Z position")
-
-                self.gcode.run_script_from_command(f"G91")
-                self.gcode.run_script_from_command(f"G1 Z+10 F600")
-                self.gcode.run_script_from_command(f"M400")
-                self.gcode.run_script_from_command(f"G90")
-                logging.info(f"lift Z position to +10")
                 
                 if active_extruder == 'extruder1':  # 右头
-                    self.gcode.run_script_from_command(f"T1")
+                    self.gcode.run_script_from_command(f"T1 R0")
 
-            # 2. 执行回零
-            self.gcode.run_script_from_command(f"G1 F6000")
-            self.gcode.run_script_from_command("G28 X")
-            self.gcode.run_script_from_command("G28 Y")
-            logging.info("RESTORE_PRINT: Homing completed")
 
             # 3. 等待温度
             if 'temperatures' in state_data:
