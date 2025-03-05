@@ -414,6 +414,14 @@ class VirtualSD:
             nozzle_fan = self.printer.lookup_object('fan_generic Nozzle_Fan0', None)
             if nozzle_fan:
                 config['fans']['nozzle_fan'] = '{:.2f}'.format(nozzle_fan.get_status(self.reactor.monotonic())['speed'])
+
+            nozzle_fan = self.printer.lookup_object('fan_generic Nozzle_Fan1', None)
+            if nozzle_fan:
+                config['fans']['nozzle_fan1'] = '{:.2f}'.format(nozzle_fan.get_status(self.reactor.monotonic())['speed'])
+                
+            auxiliary_fan = self.printer.lookup_object('fan_generic Auxiliary_Cooling_Fan', None)
+            if auxiliary_fan:
+                config['fans']['auxiliary_fan'] = '{:.2f}'.format(auxiliary_fan.get_status(self.reactor.monotonic())['speed'])
                 
         except:
             logging.exception("Error getting printer state data")
@@ -588,6 +596,10 @@ class VirtualSD:
                 for fan_name, speed in fans.items():
                     if fan_name == 'nozzle_fan':
                         self.gcode.run_script_from_command(f"M106 S{int(float(speed)*255)}")
+                    elif fan_name == 'nozzle_fan1':
+                        self.gcode.run_script_from_command(f"M106 P1 S{int(float(speed)*255)}")
+                    elif fan_name == 'auxiliary_fan':
+                        self.gcode.run_script_from_command(f"M106 P2 S{int(float(speed)*255)}")
 
             # 9. 开始打印
             logging.info("RESTORE_PRINT: Starting print")
