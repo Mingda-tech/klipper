@@ -616,7 +616,7 @@ class VirtualSD:
                     if dc_state['carriage_1'] == 'COPY':
                         self.gcode.run_script_from_command(f"M605 S2")
                     elif dc_state['carriage_1'] == 'MIRROR':
-                        self.gcode.run_script_from_command(f"M605 S1")
+                        self.gcode.run_script_from_command(f"M605 S3")
                         logging.info(f"RESTORE_PRINT: Restored dual carriage mode to {dc_state['carriage_1']}")
                 except Exception as e:
                     logging.exception("RESTORE_PRINT: Error restoring dual carriage mode")
