@@ -609,9 +609,11 @@ class VirtualSD:
             if 'dual_carriage' in state_data:
                 try:
                     dc_state = state_data['dual_carriage']
-                    if dc_state['carriage_1'] in ['COPY', 'MIRROR']:
-                        # 设置为保存的模式
-                        self.gcode.run_script_from_command(f"SET_DUAL_CARRIAGE CARRIAGE=1 MODE={dc_state['carriage_1']}")
+                    # 设置为保存的模式
+                    if dc_state['carriage_1'] == 'COPY':
+                        self.gcode.run_script_from_command(f"M605 S2")
+                    elif dc_state['carriage_1'] == 'MIRROR':
+                        self.gcode.run_script_from_command(f"M605 S1")
                         logging.info(f"RESTORE_PRINT: Restored dual carriage mode to {dc_state['carriage_1']}")
                 except Exception as e:
                     logging.exception("RESTORE_PRINT: Error restoring dual carriage mode")
