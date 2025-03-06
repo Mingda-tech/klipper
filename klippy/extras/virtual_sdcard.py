@@ -50,9 +50,7 @@ class VirtualSD:
         self.last_save_time = 0
         self.save_interval = 5.0  # 保存间隔为5秒
         config_path = os.path.expanduser('~/printer_data/config')
-        self.state_file_1 = os.path.join(config_path, 'print_state.cfg')
-        self.state_file_2 = os.path.join(config_path, 'print_state_temp.cfg')
-        self.last_saved_to_first = True
+        self.state_file = os.path.join(config_path, 'print_state.cfg')
         # 添加恢复打印命令
         self.gcode.register_command(
             "RESTORE_PRINT", self.cmd_RESTORE_PRINT,
@@ -377,7 +375,6 @@ class VirtualSD:
                     'carriage_0': dc_status['carriage_0'],
                     'carriage_1': dc_status['carriage_1']
                 }
-                logging.info(f"SAVE_STATE: Dual carriage status: {dc_status}")
                 
                 # 如果在复制或镜像模式下，保存两个挤出头的位置
                 if dc_status['carriage_1'] in ['COPY', 'MIRROR']:
@@ -424,21 +421,18 @@ class VirtualSD:
                 case_fan = self.printer.lookup_object('fan_generic Case_Fan', None)
                 if case_fan:
                     fan_status = case_fan.get_status(self.reactor.monotonic())
-                    logging.info(f"SAVE_STATE: Case_Fan status: {fan_status}")
                     config['fans']['case_fan'] = '{:.2f}'.format(fan_status['speed'])
 
                 # 获取CPU风扇
                 cpu_fan = self.printer.lookup_object('temperature_fan CPU_Temperature', None)
                 if cpu_fan:
                     fan_status = cpu_fan.get_status(self.reactor.monotonic())
-                    logging.info(f"SAVE_STATE: CPU_Fan status: {fan_status}")
                     config['fans']['cpu_fan'] = '{:.2f}'.format(fan_status['speed'])
 
                 # 获取辅助冷却风扇
                 aux_fan = self.printer.lookup_object('fan_generic Auxiliary_Cooling_Fan', None)
                 if aux_fan:
                     fan_status = aux_fan.get_status(self.reactor.monotonic())
-                    logging.info(f"SAVE_STATE: Auxiliary_Cooling_Fan status: {fan_status}")
                     config['fans']['auxiliary_fan'] = '{:.2f}'.format(fan_status['speed'])
 
                 # 获取热端风扇
@@ -447,7 +441,6 @@ class VirtualSD:
                     fan = self.printer.lookup_object(fan_name, None)
                     if fan:
                         fan_status = fan.get_status(self.reactor.monotonic())
-                        logging.info(f"SAVE_STATE: {fan_name} status: {fan_status}")
                         config['fans'][fan_name.replace('heater_fan ', '').lower()] = '{:.2f}'.format(fan_status['speed'])
 
                 # 获取喷嘴风扇
@@ -456,7 +449,6 @@ class VirtualSD:
                     fan = self.printer.lookup_object(fan_name, None)
                     if fan:
                         fan_status = fan.get_status(self.reactor.monotonic())
-                        logging.info(f"SAVE_STATE: {fan_name} status: {fan_status}")
                         config['fans'][fan_name.replace('fan_generic ', '').lower()] = '{:.2f}'.format(fan_status['speed'])
 
             except Exception as e:
@@ -465,13 +457,23 @@ class VirtualSD:
         except:
             logging.exception("Error getting printer state data")
         
-        # 交替保存到两个文件
-        save_file = self.state_file_1 if self.last_saved_to_first else self.state_file_2
+        # 使用临时文件进行原子写入操作
+        temp_file = self.state_file + '.tmp'
         try:
-            with open(save_file, 'w') as f:
+            # 先写入临时文件
+            with open(temp_file, 'w') as f:
                 config.write(f)
-            self.last_saved_to_first = not self.last_saved_to_first
+                f.flush()
+                os.fsync(f.fileno())  # 确保数据写入磁盘
+            
+            # 然后进行原子重命名操作
+            os.replace(temp_file, self.state_file)
         except:
+            # 如果发生错误，尝试清理临时文件
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
             logging.exception("Error saving print state")
     # 添加恢复打印的命令处理函数
     cmd_RESTORE_PRINT_help = "Restore the previous print after power loss"
@@ -489,10 +491,10 @@ class VirtualSD:
         
         try:
             # 先尝试读取第一个文件
-            logging.info("RESTORE_PRINT: Trying to read first state file: %s", self.state_file_1)
-            config.read(self.state_file_1)
+            logging.info("RESTORE_PRINT: Trying to read first state file: %s", self.state_file)
+            config.read(self.state_file)
             if 'print_state' in config:
-                state_file = self.state_file_1
+                state_file = self.state_file
                 state_data = config
                 logging.info("RESTORE_PRINT: Successfully read first state file")
         except:
@@ -501,11 +503,11 @@ class VirtualSD:
         if state_data is None:
             try:
                 # 如果第一个文件无效，尝试读取第二个文件
-                logging.info("RESTORE_PRINT: Trying to read second state file: %s", self.state_file_2)
+                logging.info("RESTORE_PRINT: Trying to read second state file: %s", self.state_file)
                 config = configparser.ConfigParser()
-                config.read(self.state_file_2)
+                config.read(self.state_file)
                 if 'print_state' in config:
-                    state_file = self.state_file_2
+                    state_file = self.state_file
                     state_data = config
                     logging.info("RESTORE_PRINT: Successfully read second state file")
             except:
@@ -664,14 +666,6 @@ class VirtualSD:
             self.work_timer = self.reactor.register_timer(
                 self.work_handler, self.reactor.NOW)
             logging.info("RESTORE_PRINT: Print started")
-
-            # 11. 删除状态文件
-            if state_file:
-                try:
-                    os.remove(state_file)
-                    logging.info("RESTORE_PRINT: Removed state file")
-                except:
-                    logging.exception("RESTORE_PRINT: Error removing state file")
 
         except Exception as e:
             logging.exception("RESTORE_PRINT: Error during restore process")
