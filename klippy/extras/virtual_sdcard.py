@@ -366,6 +366,20 @@ class VirtualSD:
                     'extrude_factor': '{:.2f}'.format(status['extrude_factor'])
                 }
             
+            # 获取dual_carriage状态
+            dual_carriage = self.printer.lookup_object('dual_carriage', None)
+            if dual_carriage:
+                dc_status = dual_carriage.get_status(self.reactor.monotonic())
+                config['dual_carriage'] = {
+                    'carriage_0': dc_status['carriage_0'],
+                    'carriage_1': dc_status['carriage_1']
+                }
+                logging.info(f"SAVE_STATE: Dual carriage status: {dc_status}")
+                
+                # 如果在复制或镜像模式下，保存两个挤出头的位置
+                if dc_status['carriage_1'] in ['COPY', 'MIRROR']:
+                    config['dual_carriage']['mode'] = dc_status['carriage_1']
+            
             # 从toolhead获取当前活跃挤出头信息
             toolhead = self.printer.lookup_object('toolhead')
             if toolhead:
@@ -545,6 +559,7 @@ class VirtualSD:
                     z_pos += z_lift_xyhome
                     if active_extruder == 'extruder1':  # 右头
                         z_pos += e1_zoffset
+                        z_pos += 0.2
                     
                     # 设置当前Z坐标值
                     self.gcode.run_script_from_command(f"SET_KINEMATIC_POSITION Z={z_pos}")
@@ -591,6 +606,16 @@ class VirtualSD:
                 else:
                     self.gcode.run_script_from_command("M83")
 
+            if 'dual_carriage' in state_data:
+                try:
+                    dc_state = state_data['dual_carriage']
+                    if dc_state['carriage_1'] in ['COPY', 'MIRROR']:
+                        # 设置为保存的模式
+                        self.gcode.run_script_from_command(f"SET_DUAL_CARRIAGE CARRIAGE=1 MODE={dc_state['carriage_1']}")
+                        logging.info(f"RESTORE_PRINT: Restored dual carriage mode to {dc_state['carriage_1']}")
+                except Exception as e:
+                    logging.exception("RESTORE_PRINT: Error restoring dual carriage mode")
+            
             # 6. 恢复位置
             if 'position' in state_data:
                 pos = state_data['position']
@@ -626,14 +651,16 @@ class VirtualSD:
                     elif fan_name == 'auxiliary_fan':
                         self.gcode.run_script_from_command(f"M106 P2 S{int(float(speed)*255)}")
 
-            # 9. 开始打印
+            # 9. 恢复双头模式
+
+            # 10. 开始打印
             logging.info("RESTORE_PRINT: Starting print")
             self.print_stats.note_start()
             self.work_timer = self.reactor.register_timer(
                 self.work_handler, self.reactor.NOW)
             logging.info("RESTORE_PRINT: Print started")
 
-            # 10. 删除状态文件
+            # 11. 删除状态文件
             if state_file:
                 try:
                     os.remove(state_file)
