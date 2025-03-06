@@ -51,6 +51,10 @@ class VirtualSD:
         self.save_interval = 5.0  # 保存间隔为5秒
         config_path = os.path.expanduser('~/printer_data/config')
         self.state_file = os.path.join(config_path, 'print_state.cfg')
+        # 状态保存相关
+        self.save_state_pending = False
+        self.save_state_timer = None
+        self.saved_state = None
         # 添加恢复打印命令
         self.gcode.register_command(
             "RESTORE_PRINT", self.cmd_RESTORE_PRINT,
@@ -323,10 +327,42 @@ class VirtualSD:
         else:
             self.print_stats.note_complete()
         return self.reactor.NEVER
+    def _save_state_to_disk(self, eventtime):
+        if self.saved_state is None:
+            return self.reactor.NEVER
+        
+        # 使用临时文件进行原子写入操作
+        temp_file = self.state_file + '.tmp'
+        try:
+            # 先写入临时文件
+            with open(temp_file, 'w') as f:
+                self.saved_state.write(f)
+                f.flush()
+                os.fsync(f.fileno())  # 确保数据写入磁盘
+            
+            # 然后进行原子重命名操作
+            os.replace(temp_file, self.state_file)
+            
+            # 清理状态
+            self.saved_state = None
+            self.save_state_pending = False
+            self.save_state_timer = None
+        except:
+            # 如果发生错误，尝试清理临时文件
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
+            logging.exception("Error saving print state")
+        return self.reactor.NEVER
     def save_print_state(self):
         if self.current_file is None:
             return
         
+        # 如果已经有一个保存操作在等待，就跳过这次保存
+        if self.save_state_pending:
+            return
+            
         config = configparser.ConfigParser()
         
         # 基本打印状态
@@ -456,25 +492,16 @@ class VirtualSD:
         
         except:
             logging.exception("Error getting printer state data")
-        
-        # 使用临时文件进行原子写入操作
-        temp_file = self.state_file + '.tmp'
-        try:
-            # 先写入临时文件
-            with open(temp_file, 'w') as f:
-                config.write(f)
-                f.flush()
-                os.fsync(f.fileno())  # 确保数据写入磁盘
+            return
             
-            # 然后进行原子重命名操作
-            os.replace(temp_file, self.state_file)
-        except:
-            # 如果发生错误，尝试清理临时文件
-            try:
-                os.unlink(temp_file)
-            except:
-                pass
-            logging.exception("Error saving print state")
+        # 设置保存状态
+        self.saved_state = config
+        self.save_state_pending = True
+        
+        # 注册延迟保存定时器
+        if self.save_state_timer is None:
+            self.save_state_timer = self.reactor.register_timer(
+                self._save_state_to_disk, self.reactor.NOW + 0.1)  # 延迟100ms保存
     # 添加恢复打印的命令处理函数
     cmd_RESTORE_PRINT_help = "Restore the previous print after power loss"
     def cmd_RESTORE_PRINT(self, gcmd):
