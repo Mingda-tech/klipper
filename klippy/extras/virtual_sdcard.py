@@ -47,8 +47,8 @@ class VirtualSD:
             "SDCARD_PRINT_FILE", self.cmd_SDCARD_PRINT_FILE,
             desc=self.cmd_SDCARD_PRINT_FILE_help)
         # 添加打印状态保存相关的变量
-        self.cmd_counter = 0
-        self.save_state_threshold = 50
+        self.last_save_time = 0
+        self.save_interval = 5.0  # 保存间隔为5秒
         config_path = os.path.expanduser('~/printer_data/config')
         self.state_file_1 = os.path.join(config_path, 'print_state.cfg')
         self.state_file_2 = os.path.join(config_path, 'print_state_temp.cfg')
@@ -304,13 +304,16 @@ class VirtualSD:
                     return self.reactor.NEVER
                 lines = []
                 partial_input = ""
-            # 检查是否需要保存状态
-            self.cmd_counter += 1
-            if self.cmd_counter >= self.save_state_threshold:
+            # 检查是否需要基于时间保存状态
+            if self.last_save_time + self.save_interval < eventtime:
                 self.save_print_state()
-                self.cmd_counter = 0
+                self.last_save_time = eventtime
             # 检查是否是换层命令 (M73)
             if line.strip().startswith('M73'):
+                self.save_print_state()
+            # 检查是否是换头命令 (T0/T1)
+            stripped_line = line.strip()
+            if stripped_line == 'T0' or stripped_line == 'T1':
                 self.save_print_state()
         logging.info("Exiting SD card print (position %d)", self.file_position)
         self.work_timer = None
