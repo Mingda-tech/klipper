@@ -517,28 +517,16 @@ class VirtualSD:
         state_data = None
         
         try:
-            # 先尝试读取第一个文件
-            logging.info("RESTORE_PRINT: Trying to read first state file: %s", self.state_file)
+            # 读取状态文件
+            logging.info("RESTORE_PRINT: Trying to read state file: %s", self.state_file)
             config.read(self.state_file)
             if 'print_state' in config:
                 state_file = self.state_file
                 state_data = config
-                logging.info("RESTORE_PRINT: Successfully read first state file")
+                logging.info("RESTORE_PRINT: Successfully read state file")
         except:
-            logging.exception("RESTORE_PRINT: Error reading first state file")
-        
-        if state_data is None:
-            try:
-                # 如果第一个文件无效，尝试读取第二个文件
-                logging.info("RESTORE_PRINT: Trying to read second state file: %s", self.state_file)
-                config = configparser.ConfigParser()
-                config.read(self.state_file)
-                if 'print_state' in config:
-                    state_file = self.state_file
-                    state_data = config
-                    logging.info("RESTORE_PRINT: Successfully read second state file")
-            except:
-                logging.exception("RESTORE_PRINT: Error reading second state file")
+            logging.exception("RESTORE_PRINT: Error reading state file")
+            raise gcmd.error("No valid print state found")
         
         if state_data is None:
             logging.info("RESTORE_PRINT: No valid state file found")
@@ -550,6 +538,10 @@ class VirtualSD:
             file_path = print_state['file_path']
             file_position = int(print_state['file_position'])
             logging.info("RESTORE_PRINT: Found state - file: %s, position: %d", file_path, file_position)
+
+            # 重置打印状态
+            self._reset_file()
+            self.must_pause_work = False
 
             # 1. 先恢复温度
             if 'temperatures' in state_data:
@@ -596,12 +588,11 @@ class VirtualSD:
                     # 设置当前Z坐标值
                     self.gcode.run_script_from_command(f"SET_KINEMATIC_POSITION Z={z_pos}")
                     logging.info(f"RESTORE_PRINT: Set Z position to {z_pos} for {active_extruder}")
+                    
+                    if active_extruder == 'extruder1':  # 右头
+                        self.gcode.run_script_from_command(f"T1 R0")
                 except Exception as e:
                     logging.exception("RESTORE_PRINT: Error setting Z position")
-                
-                if active_extruder == 'extruder1':  # 右头
-                    self.gcode.run_script_from_command(f"T1 R0")
-
 
             # 3. 等待温度
             if 'temperatures' in state_data:
@@ -623,7 +614,7 @@ class VirtualSD:
             self.current_file = f
             self.file_position = file_position
             self.file_size = fsize
-            self.print_stats.set_current_file(file_path)
+            self.print_stats.set_current_file(os.path.basename(file_path))
             logging.info("RESTORE_PRINT: File loaded and positioned")
 
             # 5. 恢复打印设置
@@ -685,13 +676,11 @@ class VirtualSD:
                     elif fan_name == 'auxiliary_fan':
                         self.gcode.run_script_from_command(f"M106 P2 S{int(float(speed)*255)}")
 
-            # 9. 恢复双头模式
-
-            # 10. 开始打印
+            # 9. 开始打印
             logging.info("RESTORE_PRINT: Starting print")
-            self.print_stats.note_start()
             self.work_timer = self.reactor.register_timer(
                 self.work_handler, self.reactor.NOW)
+            self.print_stats.note_start()
             logging.info("RESTORE_PRINT: Print started")
 
         except Exception as e:
