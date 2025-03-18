@@ -549,10 +549,18 @@ class VirtualSD:
                 if 'bed' in temps:
                     self.gcode.run_script_from_command(f"M140 S{float(temps['bed'])}")
                 if 'extruder' in temps:
-                    self.gcode.run_script_from_command(f"M109 S80")
+                    extruder = self.printer.lookup_object('extruder', None)
+                    if extruder:
+                        status = extruder.get_status(self.reactor.monotonic())
+                        if status['temperature'] < 80:
+                            self.gcode.run_script_from_command("M109 S80")
                     self.gcode.run_script_from_command(f"M104 S{float(temps['extruder'])}")
                 if 'extruder1' in temps:
-                    self.gcode.run_script_from_command(f"M109 T1 S80")
+                    extruder1 = self.printer.lookup_object('extruder1', None)
+                    if extruder1:
+                        status = extruder1.get_status(self.reactor.monotonic())
+                        if status['temperature'] < 80:
+                            self.gcode.run_script_from_command("M109 T1 S80")
                     self.gcode.run_script_from_command(f"M104 T1 S{float(temps['extruder1'])}")
                 logging.info("RESTORE_PRINT: Temperature commands sent")
 
