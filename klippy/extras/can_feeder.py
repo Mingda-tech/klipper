@@ -3,6 +3,7 @@ import logging
 import struct
 import queue
 import threading
+from .. import mcu
 from . import bus
 from . import canbus
 
@@ -15,13 +16,13 @@ class CanFeederInterface:
         self.uuid = int(config.get('canbus_uuid'), 16)
         
         # CAN通信参数
-        self.mcu = canbus.MCU_canbus_query(config, self.can_interface)
+        self.mcu = mcu.MCU(config)
         self.cmd_queue = queue.Queue()
         self.rx_queue = queue.Queue()
         self.mutex = threading.Lock()
         
         # 注册CAN接收回调
-        self.mcu.register_callback(self.handle_can_message)
+        self.mcu.register_response(self.handle_can_message, "can_received")
         
         # CAN消息ID定义
         self.CMD_ID_BASE = 0x100  # 命令帧基础ID
@@ -44,6 +45,17 @@ class CanFeederInterface:
         
         # 状态处理回调字典
         self.status_handlers = {}
+        
+        # 初始化MCU
+        self.printer.register_event_handler("klippy:connect", self._handle_connect)
+        
+    def _handle_connect(self):
+        """处理MCU连接事件"""
+        try:
+            self.mcu.connect()
+        except Exception:
+            logging.exception("Error connecting to CAN feeder MCU")
+            raise self.printer.config_error("Unable to connect to CAN feeder MCU")
         
     def send_command(self, cmd_type, tray_id, params=None):
         """发送CAN命令
@@ -75,7 +87,11 @@ class CanFeederInterface:
         try:
             with self.mutex:
                 # 发送CAN消息
-                self.mcu.send_raw(msg_id, data)
+                cmd_params = {
+                    'msg_id': msg_id,
+                    'data': list(data)
+                }
+                self.mcu.send_command("can_send", cmd_params)
                 logging.info(f"CAN command sent: ID={hex(msg_id)}, Data={[hex(x) for x in data]}")
                 return True
         except Exception as e:
