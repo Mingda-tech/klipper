@@ -75,8 +75,10 @@ class FeederCabinet:
     
     def _handle_connect(self):
         # 连接时初始化CAN通信
+        self.canbus = None  # 确保canbus属性始终存在
         try:
-            self.canbus = self.printer.lookup_object('canbus')
+            canbus_obj = self.printer.lookup_object('canbus')
+            self.canbus = canbus_obj  # 将查找到的对象赋值给实例变量
             self.nodeid = self.canbus.get_nodeid(self.canbus_uuid)
             self.mcu = self.printer.lookup_object('mcu')
             self.send_id = self.nodeid * 2 + 256
@@ -97,6 +99,11 @@ class FeederCabinet:
     def send_message(self, cmd_type, extruder_num=0):
         # 发送CAN消息到送料柜
         try:
+            # 检查canbus是否已初始化
+            if self.canbus is None:
+                self.logger.error("Cannot send message: CAN bus not initialized")
+                return False
+                
             msg = bytearray(8)  # CAN消息固定8字节
             msg[0] = cmd_type
             msg[1] = extruder_num
