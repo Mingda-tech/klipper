@@ -77,17 +77,50 @@ class FeederCabinet:
         # 连接时初始化CAN通信
         self.canbus = None  # 确保canbus属性始终存在
         try:
+            # 验证canbus_uuid格式
+            if not self.canbus_uuid:
+                raise self.printer.config_error("Missing required canbus_uuid parameter")
+            
+            try:
+                # 尝试将canbus_uuid转换为16进制数，验证格式
+                uuid_int = int(self.canbus_uuid, 16)
+                if uuid_int < 0 or uuid_int > 0xffffffffffff:
+                    raise ValueError("Invalid UUID format")
+            except ValueError:
+                raise self.printer.config_error(
+                    "Invalid canbus_uuid format '%s'. Must be a valid hexadecimal string (e.g. F01000000601)" 
+                    % (self.canbus_uuid,))
+            
             # 获取canbus_ids对象来管理CAN总线节点ID
-            canbus_ids = self.printer.lookup_object('canbus_ids')
-            self.nodeid = canbus_ids.get_nodeid(self.canbus_uuid)
+            try:
+                canbus_ids = self.printer.lookup_object('canbus_ids')
+            except self.printer.config_error:
+                raise self.printer.config_error(
+                    "CAN bus support not enabled. Check if [canbus_ids] section is present in config")
+            
+            # 获取节点ID
+            try:
+                self.nodeid = canbus_ids.get_nodeid(self.canbus_uuid)
+            except self.printer.config_error:
+                raise self.printer.config_error(
+                    "Unknown canbus_uuid '%s'. Make sure this device is properly registered in your config" 
+                    % (self.canbus_uuid,))
+            
             self.mcu = self.printer.lookup_object('mcu')
             self.send_id = self.nodeid * 2 + 256
             self.receive_id = self.nodeid * 2 + 256 + 1
+            
             # 获取实际的CAN总线接口对象
             self.canbus = self.mcu  # 使用mcu对象进行CAN通信
             self.logger.info("FeederCabinet initialized with nodeid %d", self.nodeid)
+        except self.printer.config_error as e:
+            self.logger.error("Failed to initialize CAN communication: %s", str(e))
+            self.gcode.respond_info("错误: 送料柜CAN通信初始化失败 - %s" % str(e))
+            self.state = STATE_ERROR
+            self.error_code = ERROR_OTHER
         except Exception as e:
             self.logger.error("Failed to initialize CAN communication: %s", str(e))
+            self.gcode.respond_info("错误: 送料柜CAN通信初始化失败 - %s" % str(e))
             self.state = STATE_ERROR
             self.error_code = ERROR_OTHER
     
