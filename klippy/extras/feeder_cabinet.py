@@ -33,14 +33,30 @@ class FeederCabinet:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name()
-        self.config = config  # 保存config对象
+        self.config = config
         
         # 获取配置参数
         self.canbus_uuid = config.get('canbus_uuid')
         self.can_interface = config.get('can_interface', 'can0')
         self.auto_feed = config.getboolean('auto_feed', True)
         self.runout_sensor = config.get('runout_sensor', None)
-        self.log_level = config.getint('log_level', 1)  # 0=错误, 1=信息, 2=调试
+        self.log_level = config.getint('log_level', 1)
+        
+        # 验证配置
+        if not self.canbus_uuid:
+            raise config.error("必须提供canbus_uuid参数")
+            
+        # 验证CAN设备是否已注册
+        try:
+            # 尝试直接获取送料柜的MCU对象
+            self.mcu = self.printer.lookup_object('mcu ' + self.name)
+        except Exception:
+            # 如果获取失败，说明没有在printer.cfg中配置对应的[mcu feeder_cabinet]
+            raise config.error(
+                "未找到送料柜的MCU配置。请在printer.cfg中添加以下配置：\n"
+                "[mcu feeder_cabinet]\n"
+                "canbus_uuid: %s\n"
+                "canbus_interface: %s" % (self.canbus_uuid, self.can_interface))
         
         # 初始化状态
         self.state = self.STATE_IDLE
