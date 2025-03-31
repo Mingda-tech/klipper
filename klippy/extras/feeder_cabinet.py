@@ -77,12 +77,14 @@ class FeederCabinet:
         # 连接时初始化CAN通信
         self.canbus = None  # 确保canbus属性始终存在
         try:
-            canbus_obj = self.printer.lookup_object('canbus')
-            self.canbus = canbus_obj  # 将查找到的对象赋值给实例变量
-            self.nodeid = self.canbus.get_nodeid(self.canbus_uuid)
+            # 获取canbus_ids对象来管理CAN总线节点ID
+            canbus_ids = self.printer.lookup_object('canbus_ids')
+            self.nodeid = canbus_ids.get_nodeid(self.canbus_uuid)
             self.mcu = self.printer.lookup_object('mcu')
             self.send_id = self.nodeid * 2 + 256
             self.receive_id = self.nodeid * 2 + 256 + 1
+            # 获取实际的CAN总线接口对象
+            self.canbus = self.mcu  # 使用mcu对象进行CAN通信
             self.logger.info("FeederCabinet initialized with nodeid %d", self.nodeid)
         except Exception as e:
             self.logger.error("Failed to initialize CAN communication: %s", str(e))
@@ -99,9 +101,9 @@ class FeederCabinet:
     def send_message(self, cmd_type, extruder_num=0):
         # 发送CAN消息到送料柜
         try:
-            # 检查canbus是否已初始化
-            if self.canbus is None:
-                self.logger.error("Cannot send message: CAN bus not initialized")
+            # 检查mcu是否已初始化
+            if self.mcu is None:
+                self.logger.error("Cannot send message: MCU not initialized")
                 return False
                 
             msg = bytearray(8)  # CAN消息固定8字节
@@ -109,8 +111,16 @@ class FeederCabinet:
             msg[1] = extruder_num
             # 其余字节保留为0
             
-            # 通过CAN总线发送消息
-            self.canbus.send_message(self.send_id, msg)
+            # 通过MCU发送CAN消息
+            # 注意：这里需要根据实际的Klipper CAN通信API进行调整
+            # 这是一个示例实现，可能需要根据实际情况修改
+            cmd_fmt = "send_can_message oid=%d can_id=%d data=%s"
+            cmd_params = {
+                'oid': 0,  # 这里需要一个有效的OID，可能需要在初始化时获取
+                'can_id': self.send_id,
+                'data': ' '.join(['%02x' % b for b in msg])
+            }
+            self.mcu.get_printer().lookup_object('gcode').run_script(cmd_fmt % cmd_params)
             self.logger.debug("Sent message: cmd=%d, extruder=%d", cmd_type, extruder_num)
             return True
         except Exception as e:
