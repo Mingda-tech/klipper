@@ -47,7 +47,7 @@ class FeederCabinet:
         
         # 配置CAN通信
         self.canbus_uuid = config.get('canbus_uuid')
-        self.can_interface = config.get('can_interface', 'can1')
+        self.can_interface = config.get('can_interface', 'can0')
         
         # 状态变量
         self.state = STATE_IDLE
@@ -55,9 +55,24 @@ class FeederCabinet:
         self.error_code = ERROR_NONE
         self.extruder_num = 0  # 默认第一个挤出头
         
+        # 初始化MCU对象
+        mainsync = self.printer.lookup_object('mcu')._clocksync
+        self._mcu = None
+        self.cmd_queue = None
+        self.send_id = None
+        self.receive_id = None
+        self.nodeid = None
+        
+        # 创建MCU配置部分
+        self._mcu_config = config.getsection(self.name)
+        # 添加canbus_uuid到MCU配置
+        self._mcu_config.set('canbus_uuid', self.canbus_uuid)
+        self._mcu_config.set('canbus_interface', self.can_interface)
+        
         # 注册事件处理器
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
+        self.printer.register_event_handler("klippy:mcu_identify", self._handle_mcu_identify)
         
         # 注册G-code命令
         self.gcode.register_command(
@@ -75,7 +90,6 @@ class FeederCabinet:
     
     def _handle_connect(self):
         # 连接时初始化CAN通信
-        self.canbus = None  # 确保canbus属性始终存在
         try:
             # 验证canbus_uuid格式
             if not self.canbus_uuid:
@@ -91,32 +105,20 @@ class FeederCabinet:
                     "Invalid canbus_uuid format '%s'. Must be a valid hexadecimal string (e.g. F01000000601)" 
                     % (self.canbus_uuid,))
             
-            # 获取canbus_ids对象来管理CAN总线节点ID
-            try:
-                canbus_ids = self.printer.lookup_object('canbus_ids')
-            except self.printer.config_error:
-                raise self.printer.config_error(
-                    "CAN bus support not enabled. Please add [canbus_ids] section to your config\n"
-                    "and register your device with:\n"
-                    "[canbus_ids]\n"
-                    "[mcu your_mcu_name]\n"
-                    "canbus_uuid: %s" % (self.canbus_uuid,))
+            # 创建MCU对象
+            from mcu import MCU, MCU_trsync
+            from clocksync import SecondarySync
             
-            # 获取节点ID
-            try:
-                self.nodeid = canbus_ids.get_nodeid(self.canbus_uuid)
-            except self.printer.config_error:
-                raise self.printer.config_error(
-                    "Unknown canbus_uuid '%s'. Make sure this device is properly registered in your config" 
-                    % (self.canbus_uuid,))
+            mainsync = self.printer.lookup_object('mcu')._clocksync
+            self._mcu = MCU(self._mcu_config, SecondarySync(self.reactor, mainsync))
+            self.printer.add_object("mcu " + self.name, self._mcu)
+            self.cmd_queue = self._mcu.alloc_command_queue()
             
-            self.mcu = self.printer.lookup_object('mcu')
-            self.send_id = self.nodeid * 2 + 256
-            self.receive_id = self.nodeid * 2 + 256 + 1
+            # 注册MCU响应处理函数
+            self._mcu.register_config_callback(self._build_config)
+            self._mcu.register_response(self._handle_cabinet_response, "cabinet_response")
             
-            # 获取实际的CAN总线接口对象
-            self.canbus = self.mcu  # 使用mcu对象进行CAN通信
-            self.logger.info("FeederCabinet initialized with nodeid %d", self.nodeid)
+            self.logger.info("FeederCabinet MCU initialized")
         except self.printer.config_error as e:
             self.logger.error("Failed to initialize CAN communication: %s", str(e))
             self.gcode.respond_info("错误: 送料柜CAN通信初始化失败 - %s" % str(e))
@@ -127,52 +129,29 @@ class FeederCabinet:
             self.gcode.respond_info("错误: 送料柜CAN通信初始化失败 - %s" % str(e))
             self.state = STATE_ERROR
             self.error_code = ERROR_OTHER
-    
-    def _handle_ready(self):
-        # 打印机就绪时设置为空闲状态
-        self.state = STATE_IDLE
-        self.progress = 0
-        self.error_code = ERROR_NONE
-        self.logger.info("FeederCabinet ready")
-    
-    def send_message(self, cmd_type, extruder_num=0):
-        # 发送CAN消息到送料柜
-        try:
-            # 检查mcu是否已初始化
-            if self.mcu is None:
-                self.logger.error("Cannot send message: MCU not initialized")
-                return False
-                
-            msg = bytearray(8)  # CAN消息固定8字节
-            msg[0] = cmd_type
-            msg[1] = extruder_num
-            # 其余字节保留为0
             
-            # 通过MCU发送CAN消息
-            # 注意：这里需要根据实际的Klipper CAN通信API进行调整
-            # 这是一个示例实现，可能需要根据实际情况修改
-            cmd_fmt = "send_can_message oid=%d can_id=%d data=%s"
-            cmd_params = {
-                'oid': 0,  # 这里需要一个有效的OID，可能需要在初始化时获取
-                'can_id': self.send_id,
-                'data': ' '.join(['%02x' % b for b in msg])
-            }
-            self.mcu.get_printer().lookup_object('gcode').run_script(cmd_fmt % cmd_params)
-            self.logger.debug("Sent message: cmd=%d, extruder=%d", cmd_type, extruder_num)
-            return True
-        except Exception as e:
-            self.logger.error("Failed to send message: %s", str(e))
-            return False
-    
-    def process_received_message(self, msg):
+    def _handle_mcu_identify(self):
+        # 获取MCU常量
+        constants = self._mcu.get_constants()
+        self.logger.info("FeederCabinet MCU identified")
+        
+    def _build_config(self):
+        # 创建命令
+        self.cabinet_send_cmd = self._mcu.lookup_command(
+            "cabinet_send cmd=%c extruder=%c",
+            cq=self.cmd_queue
+        )
+        self.logger.info("FeederCabinet commands configured")
+        
+    def _handle_cabinet_response(self, params):
         # 处理从送料柜接收到的消息
-        if len(msg) < 3:
+        if len(params) < 3:
             self.logger.error("Received invalid message (too short)")
             return
         
-        status = msg[0]
-        progress = msg[1]
-        error_code = msg[2]
+        status = params['status']
+        progress = params['progress']
+        error_code = params['error']
         
         self.logger.debug("Received message: status=%d, progress=%d, error=%d", 
                          status, progress, error_code)
@@ -208,6 +187,31 @@ class FeederCabinet:
                 error_msg = "其他错误"
             
             self.gcode.respond_info("续料失败: %s" % error_msg)
+    
+    def _handle_ready(self):
+        # 打印机就绪时设置为空闲状态
+        self.state = STATE_IDLE
+        self.progress = 0
+        self.error_code = ERROR_NONE
+        self.logger.info("FeederCabinet ready")
+    
+    def send_message(self, cmd_type, extruder_num=0):
+        # 发送CAN消息到送料柜
+        try:
+            # 检查MCU是否已初始化
+            if self._mcu is None:
+                self.logger.error("Cannot send message: MCU not initialized")
+                return False
+            
+            # 使用cabinet_send_cmd命令发送消息
+            self.cabinet_send_cmd.send([cmd_type, extruder_num])
+            self.logger.debug("Sent message: cmd=%d, extruder=%d", cmd_type, extruder_num)
+            return True
+        except Exception as e:
+            self.logger.error("Failed to send message: %s", str(e))
+            return False
+    
+    # 已移至_handle_cabinet_response方法
     
     def start_feeding(self, extruder_num=0):
         # 开始送料流程
