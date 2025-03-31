@@ -96,7 +96,11 @@ class FeederCabinet:
                 canbus_ids = self.printer.lookup_object('canbus_ids')
             except self.printer.config_error:
                 raise self.printer.config_error(
-                    "CAN bus support not enabled. Check if [canbus_ids] section is present in config")
+                    "CAN bus support not enabled. Please add [canbus_ids] section to your config\n"
+                    "and register your device with:\n"
+                    "[canbus_ids]\n"
+                    "[mcu your_mcu_name]\n"
+                    "canbus_uuid: %s" % (self.canbus_uuid,))
             
             # 获取节点ID
             try:
