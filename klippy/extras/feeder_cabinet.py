@@ -106,23 +106,45 @@ class FeederCabinet:
 
     def _init_canbus(self):
         """初始化CAN总线通信"""
+        self._log(1, "开始初始化CAN总线通信")
+        
+        # 获取CAN总线对象
+        try:
+            self._log(2, "尝试获取CAN接口: %s" % self.can_interface)
+            self.can = self.printer.lookup_object('canbus').get_canbus(self.can_interface)
+            self._log(2, "成功获取CAN接口")
+        except Exception as e:
+            self._log(0, "获取CAN接口失败: %s" % str(e))
+            raise self.printer.config_error(
+                "找不到CAN接口'%s'，请检查接口名称是否正确" % (self.can_interface,))
+
         # 获取CAN节点ID
-        canbus_ids = self.printer.load_object(None, 'canbus_ids')
-        self.can_node_id = canbus_ids.get_nodeid(self.canbus_uuid)
+        try:
+            self._log(2, "尝试获取UUID为'%s'的节点ID" % self.canbus_uuid)
+            canbus_ids = self.printer.load_object(None, 'canbus_ids')
+            self.can_node_id = canbus_ids.get_nodeid(self.canbus_uuid)
+            self._log(1, "成功获取节点ID: %d" % self.can_node_id)
+        except Exception as e:
+            self._log(0, "获取节点ID失败: %s" % str(e))
+            msg = "找不到UUID为'%s'的CAN设备\n" % (self.canbus_uuid,)
+            msg += "请确保设备已正确连接并运行以下命令检查可用设备：\n"
+            msg += "~/klippy-env/bin/python ~/klipper/scripts/canbus_query.py %s" % (
+                self.can_interface,)
+            raise self.printer.config_error(msg)
         
         # 设置发送和接收ID
         self.tx_id = self.can_node_id * 2 + 256
         self.rx_id = self.tx_id + 1
-        
-        # 创建CAN通信对象
-        self.can = self.printer.lookup_object('canbus').get_canbus(self.can_interface)
+        self._log(2, "设置CAN ID - 发送: %d, 接收: %d" % (self.tx_id, self.rx_id))
         
         # 注册接收回调
         self.can.register_callback(self.rx_id, self._handle_can_receive)
+        self._log(1, "CAN总线初始化完成")
         
         # 启动状态查询定时器
         self.status_timer = self.reactor.register_timer(
             self._status_timer_event, self.reactor.NOW)
+        self._log(2, "状态查询定时器已启动")
 
     def _handle_disconnect(self):
         """处理断开连接事件"""
