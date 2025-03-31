@@ -1,381 +1,243 @@
-#!/usr/bin/env python3
-# 送料柜控制模块
+# Support for feeder cabinet via CAN bus
 #
-# Copyright (C) 2024 <your name> <your email>
+# Copyright (C) 2023  <Your Name>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 
 import logging
-import math
-import time
-import os
+
+# 状态定义
+STATE_IDLE = 0      # 空闲状态
+STATE_RUNOUT = 1    # 检测到耗材用尽
+STATE_REQUESTING = 2 # 发送补料请求
+STATE_FEEDING = 3   # 送料中
+STATE_LOADED = 4    # 检测到新耗材
+STATE_COMPLETE = 5  # 完成
+STATE_ERROR = 6     # 错误状态
+
+# 命令类型
+CMD_REQUEST_FEED = 0x01  # 请求补料
+CMD_STOP_FEED = 0x02     # 停止补料
+CMD_QUERY_STATUS = 0x03  # 状态查询
+CMD_PRINTING = 0x04      # 打印中
+CMD_PRINT_COMPLETE = 0x05 # 打印完成
+CMD_PRINT_PAUSE = 0x06   # 打印暂停
+CMD_PRINT_CANCEL = 0x07  # 打印取消
+CMD_PRINTER_IDLE = 0x08  # 打印机空闲
+
+# 状态码
+STATUS_IDLE = 0x00       # 空闲
+STATUS_PREPARING = 0x01   # 准备送料
+STATUS_FEEDING = 0x02     # 送料中
+STATUS_COMPLETE = 0x03    # 送料完成
+STATUS_FAILED = 0x04      # 送料失败
+
+# 错误码
+ERROR_NONE = 0x00         # 无错误
+ERROR_MECHANICAL = 0x01    # 机械故障
+ERROR_NO_FILAMENT = 0x02   # 耗材缺失
+ERROR_OTHER = 0x03         # 其他错误
 
 class FeederCabinet:
-    # 状态常量定义
-    STATE_IDLE = 0
-    STATE_RUNOUT = 1 
-    STATE_REQUESTING = 2
-    STATE_FEEDING = 3
-    STATE_LOADED = 4
-    STATE_ERROR = 5
-    STATE_COMPLETE = 6
-
-    # CAN通信命令定义
-    CMD_REQUEST_FEED = 0x01
-    CMD_STOP_FEED = 0x02
-    CMD_QUERY_STATUS = 0x03
-    CMD_PRINTING = 0x04
-    CMD_PRINT_COMPLETE = 0x05
-    CMD_PRINT_PAUSE = 0x06
-    CMD_PRINT_CANCEL = 0x07
-    CMD_PRINTER_IDLE = 0x08
-
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.name = config.get_name()
         self.reactor = self.printer.get_reactor()
+        self.name = config.get_name()
+        self.gcode = self.printer.lookup_object('gcode')
         
-        # 基本配置参数
+        # 配置CAN通信
         self.canbus_uuid = config.get('canbus_uuid')
-        self.can_interface = config.get('can_interface', 'can0')
-        self.speed = config.getfloat('speed', 5.0, above=0.0)
-        self.auto_feed = config.getboolean('auto_feed', True)
-        self.max_retries = config.getint('max_retries', 3)
+        self.can_interface = config.get('can_interface', 'can1')
         
-        # 日志相关配置
-        self.log_level = config.getint('log_level', 1)
-        self.log_file = config.get('log_file', None)
-        if self.log_file:
-            self.log_file = os.path.expanduser(self.log_file)
-            
-        # 验证配置
-        if not self.canbus_uuid:
-            raise config.error("必须提供canbus_uuid参数")
-
-        # 初始化状态
-        self.state = self.STATE_IDLE
-        self.error_code = 0
-        self.is_printing = False
-        self.print_paused = False
-        self.retry_count = 0
+        # 状态变量
+        self.state = STATE_IDLE
         self.progress = 0
-        self.last_status_time = 0
-        self.status_timer = None
-        self.error_dict = {
-            0x00: "无错误",
-            0x01: "机械故障",
-            0x02: "耗材缺失",
-            0x03: "通信超时",
-            0x04: "未知错误"
-        }
+        self.error_code = ERROR_NONE
+        self.extruder_num = 0  # 默认第一个挤出头
         
         # 注册事件处理器
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.printer.register_event_handler("klippy:ready", self._handle_ready)
-        self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
-        
-        # 注册打印事件处理器
-        self.printer.register_event_handler("print_stats:printing", self._handle_printing)
-        self.printer.register_event_handler("print_stats:paused", self._handle_paused)
-        self.printer.register_event_handler("print_stats:complete", self._handle_complete)
         
         # 注册G-code命令
-        gcode = self.printer.lookup_object('gcode')
-        gcode.register_command('START_FEEDER_CABINET', self.cmd_START_FEEDER_CABINET,
-                             desc=self.cmd_START_FEEDER_CABINET_help)
-        gcode.register_command('QUERY_FEEDER_CABINET', self.cmd_QUERY_FEEDER_CABINET,
-                             desc=self.cmd_QUERY_FEEDER_CABINET_help)
-        gcode.register_command('CANCEL_FEEDER_CABINET', self.cmd_CANCEL_FEEDER_CABINET,
-                             desc=self.cmd_CANCEL_FEEDER_CABINET_help)
-
+        self.gcode.register_command(
+            'START_FEEDER_CABINET', self.cmd_START_FEEDER_CABINET,
+            desc="手动启动续料")
+        self.gcode.register_command(
+            'QUERY_FEEDER_CABINET', self.cmd_QUERY_FEEDER_CABINET,
+            desc="查询当前状态")
+        self.gcode.register_command(
+            'CANCEL_FEEDER_CABINET', self.cmd_CANCEL_FEEDER_CABINET,
+            desc="取消续料操作")
+        
+        # 日志记录器
+        self.logger = logging.getLogger(self.name)
+    
     def _handle_connect(self):
-        """处理Klipper连接事件"""
+        # 连接时初始化CAN通信
         try:
-            # 初始化CAN总线通信
-            self._init_canbus()
-        except Exception:
-            logging.exception("送料柜初始化失败")
-            raise
-
+            self.canbus = self.printer.lookup_object('canbus')
+            self.nodeid = self.canbus.get_nodeid(self.canbus_uuid)
+            self.mcu = self.printer.lookup_object('mcu')
+            self.send_id = self.nodeid * 2 + 256
+            self.receive_id = self.nodeid * 2 + 256 + 1
+            self.logger.info("FeederCabinet initialized with nodeid %d", self.nodeid)
+        except Exception as e:
+            self.logger.error("Failed to initialize CAN communication: %s", str(e))
+            self.state = STATE_ERROR
+            self.error_code = ERROR_OTHER
+    
     def _handle_ready(self):
-        """处理Klipper就绪事件"""
-        # 设置初始状态
-        self.state = self.STATE_IDLE
-        self.error_code = 0
+        # 打印机就绪时设置为空闲状态
+        self.state = STATE_IDLE
         self.progress = 0
-
-    def _init_canbus(self):
-        """初始化CAN总线通信"""
-        self._log(1, "开始初始化CAN总线通信")
-        
-        # 获取CAN总线对象
+        self.error_code = ERROR_NONE
+        self.logger.info("FeederCabinet ready")
+    
+    def send_message(self, cmd_type, extruder_num=0):
+        # 发送CAN消息到送料柜
         try:
-            self._log(2, "尝试获取CAN接口: %s" % self.can_interface)
-            self.can = self.printer.lookup_object('canbus').get_canbus(self.can_interface)
-            self._log(2, "成功获取CAN接口")
-        except Exception as e:
-            self._log(0, "获取CAN接口失败: %s" % str(e))
-            raise self.printer.config_error(
-                "找不到CAN接口'%s'，请检查接口名称是否正确" % (self.can_interface,))
-
-        # 获取CAN节点ID
-        try:
-            self._log(2, "尝试获取UUID为'%s'的节点ID" % self.canbus_uuid)
-            canbus_ids = self.printer.load_object(None, 'canbus_ids')
-            self.can_node_id = canbus_ids.get_nodeid(self.canbus_uuid)
-            self._log(1, "成功获取节点ID: %d" % self.can_node_id)
-        except Exception as e:
-            self._log(0, "获取节点ID失败: %s" % str(e))
-            msg = "找不到UUID为'%s'的CAN设备\n" % (self.canbus_uuid,)
-            msg += "请确保设备已正确连接并运行以下命令检查可用设备：\n"
-            msg += "~/klippy-env/bin/python ~/klipper/scripts/canbus_query.py %s" % (
-                self.can_interface,)
-            raise self.printer.config_error(msg)
-        
-        # 设置发送和接收ID
-        self.tx_id = self.can_node_id * 2 + 256
-        self.rx_id = self.tx_id + 1
-        self._log(2, "设置CAN ID - 发送: %d, 接收: %d" % (self.tx_id, self.rx_id))
-        
-        # 注册接收回调
-        self.can.register_callback(self.rx_id, self._handle_can_receive)
-        self._log(1, "CAN总线初始化完成")
-        
-        # 启动状态查询定时器
-        self.status_timer = self.reactor.register_timer(
-            self._status_timer_event, self.reactor.NOW)
-        self._log(2, "状态查询定时器已启动")
-
-    def _handle_disconnect(self):
-        """处理断开连接事件"""
-        if self.status_timer is not None:
-            self.reactor.unregister_timer(self.status_timer)
-            self.status_timer = None
-
-    def _status_timer_event(self, eventtime):
-        """定时查询状态"""
-        if self.state != self.STATE_IDLE:
-            # 检查通信超时
-            if eventtime - self.last_status_time > 5.0:  # 5秒超时
-                self._log(0, "CAN通信超时")
-                self._handle_error(0x03)  # 通信超时错误
-            else:
-                # 发送状态查询
-                self._send_can_message(self.CMD_QUERY_STATUS)
-                self._log(2, "发送状态查询")
-        return eventtime + 1.0  # 每秒查询一次
-
-    def _send_can_message(self, cmd, data=None):
-        """发送CAN消息"""
-        msg = bytearray([cmd])  # 命令类型
-        msg.append(0)  # 挤出头编号(默认0)
-        
-        # 添加数据
-        if data is not None:
-            msg.extend(data)
-        
-        # 补齐消息长度到8字节
-        while len(msg) < 8:
-            msg.append(0)
+            msg = bytearray(8)  # CAN消息固定8字节
+            msg[0] = cmd_type
+            msg[1] = extruder_num
+            # 其余字节保留为0
             
-        # 发送消息
-        self.can.send_message(self.tx_id, msg)
-
-    def _handle_printing(self, print_time):
-        """处理打印开始事件"""
-        self.is_printing = True
-        self._send_can_message(self.CMD_PRINTING)
-
-    def _handle_paused(self, print_time):
-        """处理打印暂停事件"""
-        self.print_paused = True
-        self._send_can_message(self.CMD_PRINT_PAUSE)
-
-    def _handle_complete(self, print_time):
-        """处理打印完成事件"""
-        self.is_printing = False
-        self.print_paused = False
-        self._send_can_message(self.CMD_PRINT_COMPLETE)
-
-    def _handle_runout(self, print_time):
-        """处理耗材用尽事件"""
-        if not self.auto_feed or not self.is_printing:
-            return
-            
-        logging.info("送料柜: 检测到耗材用尽")
-        self.state = self.STATE_RUNOUT
-        
-        # 暂停打印
-        pause_resume = self.printer.lookup_object('pause_resume')
-        pause_resume.send_pause_command()
-        
-        # 等待打印机暂停
-        reactor = self.printer.get_reactor()
-        reactor.pause(reactor.monotonic() + 2.)
-        
-        # 发送补料请求
-        self._send_can_message(self.CMD_REQUEST_FEED)
-        self.state = self.STATE_REQUESTING
-        
-        # 通知用户
-        gcode = self.printer.lookup_object('gcode')
-        gcode.respond_info("检测到耗材用尽，已启动自动续料")
-
-    def _handle_can_receive(self, msg_id, msg):
-        """处理接收到的CAN消息"""
+            # 通过CAN总线发送消息
+            self.canbus.send_message(self.send_id, msg)
+            self.logger.debug("Sent message: cmd=%d, extruder=%d", cmd_type, extruder_num)
+            return True
+        except Exception as e:
+            self.logger.error("Failed to send message: %s", str(e))
+            return False
+    
+    def process_received_message(self, msg):
+        # 处理从送料柜接收到的消息
         if len(msg) < 3:
-            self._log(0, "接收到无效的CAN消息")
+            self.logger.error("Received invalid message (too short)")
             return
-            
-        status = msg[0]  # 状态码
-        progress = msg[1]  # 进度
-        error = msg[2]  # 错误码
         
-        self._log(2, "接收CAN消息: 状态=%d, 进度=%d, 错误=%d" % 
-                 (status, progress, error))
+        status = msg[0]
+        progress = msg[1]
+        error_code = msg[2]
+        
+        self.logger.debug("Received message: status=%d, progress=%d, error=%d", 
+                         status, progress, error_code)
         
         # 更新状态
+        if status == STATUS_IDLE:
+            self.state = STATE_IDLE
+        elif status == STATUS_PREPARING:
+            self.state = STATE_REQUESTING
+        elif status == STATUS_FEEDING:
+            self.state = STATE_FEEDING
+        elif status == STATUS_COMPLETE:
+            self.state = STATE_LOADED
+        elif status == STATUS_FAILED:
+            self.state = STATE_ERROR
+        
         self.progress = progress
-        self.error_code = error
+        self.error_code = error_code
         
-        # 根据状态码更新状态
-        if status == 0x00:  # 空闲
-            self.state = self.STATE_IDLE
-            self.retry_count = 0  # 重置重试计数
-        elif status == 0x01:  # 准备送料
-            self.state = self.STATE_REQUESTING
-        elif status == 0x02:  # 送料中
-            self.state = self.STATE_FEEDING
-        elif status == 0x03:  # 送料完成
-            self.state = self.STATE_LOADED
-            self.retry_count = 0  # 重置重试计数
-            self._handle_load_complete()
-        elif status == 0x04:  # 送料失败
-            self._handle_error(error)
+        # 处理状态变化
+        if self.state == STATE_LOADED:
+            # 检测到新耗材，发送完成信号
+            self.state = STATE_COMPLETE
+            self.gcode.respond_info("续料完成，新耗材已加载")
+        elif self.state == STATE_ERROR:
+            # 处理错误
+            error_msg = "未知错误"
+            if error_code == ERROR_MECHANICAL:
+                error_msg = "机械故障"
+            elif error_code == ERROR_NO_FILAMENT:
+                error_msg = "耗材缺失"
+            elif error_code == ERROR_OTHER:
+                error_msg = "其他错误"
             
-        # 记录最后接收状态的时间
-        self.last_status_time = self.reactor.monotonic()
-
-    def _handle_load_complete(self):
-        """处理送料完成"""
-        if not self.print_paused:
-            return
-            
-        # 恢复打印
-        pause_resume = self.printer.lookup_object('pause_resume')
-        pause_resume.send_resume_command()
+            self.gcode.respond_info("续料失败: %s" % error_msg)
+    
+    def start_feeding(self, extruder_num=0):
+        # 开始送料流程
+        if self.state != STATE_IDLE and self.state != STATE_RUNOUT:
+            self.gcode.respond_info("无法启动续料：当前状态不允许此操作")
+            return False
         
-        # 通知用户
-        gcode = self.printer.lookup_object('gcode')
-        gcode.respond_info("送料完成，已恢复打印")
+        self.extruder_num = extruder_num
+        self.state = STATE_REQUESTING
+        self.progress = 0
         
-        # 更新状态
-        self.state = self.STATE_COMPLETE
-        self._send_can_message(self.CMD_PRINTING)
-
-    def _handle_error(self, error_code):
-        """处理错误"""
-        error_msg = self.error_dict.get(error_code, "未知错误(代码:%d)" % error_code)
-        self._log(0, "送料柜错误: %s" % error_msg)
-        
-        # 记录错误时间
-        self.last_error_time = self.reactor.monotonic()
-        
-        # 检查是否需要重试
-        if self.retry_count < self.max_retries:
-            self.retry_count += 1
-            self._log(1, "尝试重试 (%d/%d)" % (self.retry_count, self.max_retries))
-            
-            # 等待2秒后重试
-            self.reactor.pause(self.last_error_time + 2.)
-            self._send_can_message(self.CMD_REQUEST_FEED)
-            self.state = self.STATE_REQUESTING
-        else:
-            self._log(0, "达到最大重试次数，需要手动处理")
-            self.state = self.STATE_ERROR
-
-    def _log(self, level, msg):
-        """记录日志"""
-        if level > self.log_level:
-            return
-            
-        # 获取当前时间
-        current_time = time.strftime("%Y-%m-%d %H:%M:%S")
-        
-        # 构建日志消息
-        log_msg = "[%s] %s" % (current_time, msg)
-        
-        # 根据级别记录日志
-        if level == 0:  # 错误
-            logging.error(log_msg)
-        elif level == 1:  # 信息
-            logging.info(log_msg)
-        else:  # 调试
-            logging.debug(log_msg)
-            
-        # 写入日志文件
-        if self.log_file:
-            try:
-                with open(self.log_file, 'a') as f:
-                    f.write(log_msg + "\n")
-            except Exception:
-                logging.exception("写入日志文件失败")
-
-    def get_status(self, eventtime=None):
-        """返回当前状态信息"""
-        return {
-            'state': self.state,
-            'error_code': self.error_code,
-            'error_msg': self.error_dict.get(self.error_code, "未知错误"),
-            'progress': self.progress,
-            'retry_count': self.retry_count,
-            'is_printing': self.is_printing,
-            'print_paused': self.print_paused,
-            'auto_feed': self.auto_feed
-        }
-
-    cmd_START_FEEDER_CABINET_help = "手动启动送料柜续料"
-    def cmd_START_FEEDER_CABINET(self, gcmd):
-        """手动启动送料柜续料"""
-        if self.state != self.STATE_IDLE:
-            raise gcmd.error("送料柜当前正忙")
         # 发送补料请求
-        self._send_can_message(self.CMD_REQUEST_FEED)
-        self.state = self.STATE_REQUESTING
-        gcmd.respond_info("已发送补料请求")
-
-    cmd_QUERY_FEEDER_CABINET_help = "查询送料柜状态"
-    def cmd_QUERY_FEEDER_CABINET(self, gcmd):
-        """查询送料柜状态"""
-        status = self.get_status()
-        state_desc = {
-            self.STATE_IDLE: "空闲",
-            self.STATE_RUNOUT: "耗材用尽",
-            self.STATE_REQUESTING: "请求补料",
-            self.STATE_FEEDING: "送料中",
-            self.STATE_LOADED: "已装载",
-            self.STATE_ERROR: "错误",
-            self.STATE_COMPLETE: "完成"
-        }.get(status['state'], "未知")
+        if not self.send_message(CMD_REQUEST_FEED, extruder_num):
+            self.state = STATE_ERROR
+            self.error_code = ERROR_OTHER
+            self.gcode.respond_info("发送补料请求失败")
+            return False
         
-        gcmd.respond_info(
-            "当前状态：%s\n"
-            "进度：%d%%\n"
-            "错误代码：%d" % (
-                state_desc,
-                status['progress'],
-                status['error_code']
-            ))
-
-    cmd_CANCEL_FEEDER_CABINET_help = "取消送料柜操作"
+        self.gcode.respond_info("已发送补料请求，等待送料柜响应")
+        return True
+    
+    def cancel_feeding(self):
+        # 取消送料流程
+        if self.state == STATE_IDLE or self.state == STATE_COMPLETE:
+            self.gcode.respond_info("当前没有活动的续料操作")
+            return False
+        
+        # 发送停止补料命令
+        if not self.send_message(CMD_STOP_FEED, self.extruder_num):
+            self.gcode.respond_info("发送取消命令失败")
+            return False
+        
+        self.state = STATE_IDLE
+        self.progress = 0
+        self.gcode.respond_info("已取消续料操作")
+        return True
+    
+    def query_status(self):
+        # 查询当前状态
+        state_desc = "未知"
+        if self.state == STATE_IDLE:
+            state_desc = "空闲"
+        elif self.state == STATE_RUNOUT:
+            state_desc = "检测到耗材用尽"
+        elif self.state == STATE_REQUESTING:
+            state_desc = "发送补料请求"
+        elif self.state == STATE_FEEDING:
+            state_desc = "送料中"
+        elif self.state == STATE_LOADED:
+            state_desc = "检测到新耗材"
+        elif self.state == STATE_COMPLETE:
+            state_desc = "完成"
+        elif self.state == STATE_ERROR:
+            state_desc = "错误"
+        
+        error_msg = ""
+        if self.error_code != ERROR_NONE:
+            if self.error_code == ERROR_MECHANICAL:
+                error_msg = "机械故障"
+            elif self.error_code == ERROR_NO_FILAMENT:
+                error_msg = "耗材缺失"
+            elif self.error_code == ERROR_OTHER:
+                error_msg = "其他错误"
+            error_msg = "错误信息：" + error_msg
+        
+        self.gcode.respond_info(
+            "当前状态：%s\n进度：%d%%\n%s" % 
+            (state_desc, self.progress, error_msg))
+        
+        # 同时发送状态查询命令到送料柜以更新状态
+        self.send_message(CMD_QUERY_STATUS, self.extruder_num)
+        
+        return True
+    
+    # G-code命令处理函数
+    def cmd_START_FEEDER_CABINET(self, gcmd):
+        extruder_num = gcmd.get_int('EXTRUDER', 0, minval=0, maxval=1)
+        self.start_feeding(extruder_num)
+    
+    def cmd_QUERY_FEEDER_CABINET(self, gcmd):
+        self.query_status()
+    
     def cmd_CANCEL_FEEDER_CABINET(self, gcmd):
-        """取消送料柜操作"""
-        if self.state == self.STATE_IDLE:
-            raise gcmd.error("送料柜当前空闲")
-        # 发送停止命令
-        self._send_can_message(self.CMD_STOP_FEED)
-        self.state = self.STATE_IDLE
-        gcmd.respond_info("已取消操作")
+        self.cancel_feeding()
 
 def load_config(config):
-    return FeederCabinet(config) 
+    return FeederCabinet(config)
