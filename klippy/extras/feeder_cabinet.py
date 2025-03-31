@@ -33,61 +33,35 @@ class FeederCabinet:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name()
-        self.config = config
         
-        # 获取配置参数
+        # 基本配置参数
         self.canbus_uuid = config.get('canbus_uuid')
         self.can_interface = config.get('can_interface', 'can0')
+        self.speed = config.getfloat('speed', 5.0, above=0.0)
         self.auto_feed = config.getboolean('auto_feed', True)
-        self.runout_sensor = config.get('runout_sensor', None)
-        self.log_level = config.getint('log_level', 1)
-        
-        # 验证配置
-        if not self.canbus_uuid:
-            raise config.error("必须提供canbus_uuid参数")
-            
-        # 验证CAN设备是否已注册
-        try:
-            # 尝试直接获取送料柜的MCU对象
-            self.mcu = self.printer.lookup_object('mcu ' + self.name)
-        except Exception:
-            # 如果获取失败，说明没有在printer.cfg中配置对应的[mcu feeder_cabinet]
-            raise config.error(
-                "未找到送料柜的MCU配置。请在printer.cfg中添加以下配置：\n"
-                "[mcu feeder_cabinet]\n"
-                "canbus_uuid: %s\n"
-                "canbus_interface: %s" % (self.canbus_uuid, self.can_interface))
-        
-        # 初始化状态
-        self.state = self.STATE_IDLE
-        self.error_code = 0
-        self.progress = 0
-        self.is_printing = False
-        self.print_paused = False
-        
-        # CAN通信相关
-        self.can = None
-        self.can_node_id = None
-        self.receive_queue = []
-        self.last_status_time = 0
-        self.status_timer = None
-        
-        # 错误处理相关
-        self.error_dict = {
-            0x00: "无错误",
-            0x01: "机械故障",
-            0x02: "耗材缺失",
-            0x03: "通信超时",
-            0x04: "未知错误"
-        }
         self.max_retries = config.getint('max_retries', 3)
-        self.retry_count = 0
-        self.last_error_time = 0
         
-        # 日志记录
+        # 日志相关配置
+        self.log_level = config.getint('log_level', 1)
         self.log_file = config.get('log_file', None)
         if self.log_file:
             self.log_file = os.path.expanduser(self.log_file)
+            
+        # 验证配置
+        if not self.canbus_uuid:
+            raise config.error("必须提供canbus_uuid参数")
+
+        # 初始化MCU
+        self.mcu = MCU(config, SecondarySync(self.printer.get_reactor(), 
+                      self.printer.lookup_object('mcu')._clocksync))
+        self.printer.add_object('mcu ' + self.name, self.mcu)
+        self.cmd_queue = self.mcu.alloc_command_queue()
+
+        # 初始化状态
+        self.state = self.STATE_IDLE
+        self.error_code = 0
+        self.is_printing = False
+        self.print_paused = False
         
         # 注册事件处理器
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
@@ -95,12 +69,9 @@ class FeederCabinet:
         self.printer.register_event_handler("klippy:disconnect", self._handle_disconnect)
         
         # 注册打印事件处理器
-        self.printer.register_event_handler("print_stats:printing", 
-                                          self._handle_printing)
-        self.printer.register_event_handler("print_stats:paused",
-                                          self._handle_paused)
-        self.printer.register_event_handler("print_stats:complete",
-                                          self._handle_complete)
+        self.printer.register_event_handler("print_stats:printing", self._handle_printing)
+        self.printer.register_event_handler("print_stats:paused", self._handle_paused)
+        self.printer.register_event_handler("print_stats:complete", self._handle_complete)
         
         # 注册G-code命令
         gcode = self.printer.lookup_object('gcode')
