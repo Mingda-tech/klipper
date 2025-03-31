@@ -9,6 +9,8 @@ import logging
 import math
 import time
 import os
+from mcu import MCU, MCU_trsync
+from clocksync import SecondarySync
 
 class FeederCabinet:
     # 状态常量定义
