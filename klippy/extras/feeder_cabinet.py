@@ -9,8 +9,6 @@ import logging
 import math
 import time
 import os
-from mcu import MCU, MCU_trsync
-from clocksync import SecondarySync
 
 class FeederCabinet:
     # 状态常量定义
@@ -35,6 +33,7 @@ class FeederCabinet:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name()
+        self.reactor = self.printer.get_reactor()
         
         # 基本配置参数
         self.canbus_uuid = config.get('canbus_uuid')
@@ -53,17 +52,22 @@ class FeederCabinet:
         if not self.canbus_uuid:
             raise config.error("必须提供canbus_uuid参数")
 
-        # 初始化MCU
-        self.mcu = MCU(config, SecondarySync(self.printer.get_reactor(), 
-                      self.printer.lookup_object('mcu')._clocksync))
-        self.printer.add_object('mcu ' + self.name, self.mcu)
-        self.cmd_queue = self.mcu.alloc_command_queue()
-
         # 初始化状态
         self.state = self.STATE_IDLE
         self.error_code = 0
         self.is_printing = False
         self.print_paused = False
+        self.retry_count = 0
+        self.progress = 0
+        self.last_status_time = 0
+        self.status_timer = None
+        self.error_dict = {
+            0x00: "无错误",
+            0x01: "机械故障",
+            0x02: "耗材缺失",
+            0x03: "通信超时",
+            0x04: "未知错误"
+        }
         
         # 注册事件处理器
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
@@ -89,14 +93,6 @@ class FeederCabinet:
         try:
             # 初始化CAN总线通信
             self._init_canbus()
-            
-            # 设置耗材传感器回调
-            if self.runout_sensor:
-                self.runout_sensor = self.printer.lookup_object(self.runout_sensor)
-                if hasattr(self.runout_sensor, 'register_runout_callback'):
-                    self.runout_sensor.register_runout_callback(self._handle_runout)
-                else:
-                    logging.warning("送料柜: 耗材传感器不支持runout回调")
         except Exception:
             logging.exception("送料柜初始化失败")
             raise
@@ -110,12 +106,9 @@ class FeederCabinet:
 
     def _init_canbus(self):
         """初始化CAN总线通信"""
-        # 获取打印机对象
-        self.reactor = self.printer.get_reactor()
-        
-        # 初始化CAN总线
-        cbid = self.printer.load_object(self.config, 'canbus_ids')
-        self.can_node_id = cbid.get_nodeid(self.canbus_uuid)
+        # 获取CAN节点ID
+        canbus_ids = self.printer.load_object(None, 'canbus_ids')
+        self.can_node_id = canbus_ids.get_nodeid(self.canbus_uuid)
         
         # 设置发送和接收ID
         self.tx_id = self.can_node_id * 2 + 256
