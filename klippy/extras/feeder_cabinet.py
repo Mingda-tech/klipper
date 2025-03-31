@@ -33,6 +33,7 @@ class FeederCabinet:
     def __init__(self, config):
         self.printer = config.get_printer()
         self.name = config.get_name()
+        self.config = config  # 保存config对象
         
         # 获取配置参数
         self.canbus_uuid = config.get('canbus_uuid')
