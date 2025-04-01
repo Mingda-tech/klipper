@@ -47,7 +47,7 @@ class FeederCabinet:
         
         # 配置CAN通信
         self.canbus_uuid = config.get('canbus_uuid')
-        self.can_interface = config.get('can_interface', 'can0')
+        self.canbus_interface = config.get('canbus_interface', 'can0')
         
         # 状态变量
         self.state = STATE_IDLE
@@ -93,7 +93,7 @@ class FeederCabinet:
                 raise self.printer.config_error("Missing required canbus_uuid parameter")
             
             self.logger.info("Initializing CAN communication with UUID: %s, interface: %s", 
-                             self.canbus_uuid, self.can_interface)
+                             self.canbus_uuid, self.canbus_interface)
             
             try:
                 # 尝试将canbus_uuid转换为16进制数，验证格式
@@ -113,8 +113,8 @@ class FeederCabinet:
                 self.logger.info("Using existing CAN node ID: %d", self.nodeid)
             except self.printer.config_error:
                 # 如果不存在，则添加新的UUID并获取节点ID
-                self.logger.info("Adding new UUID to canbus_ids with interface: %s", self.can_interface)
-                self.nodeid = cbid.add_uuid(self._mcu_config, self.canbus_uuid, self.can_interface)
+                self.logger.info("Adding new UUID to canbus_ids with interface: %s", self.canbus_interface)
+                self.nodeid = cbid.add_uuid(self._mcu_config, self.canbus_uuid, self.canbus_interface)
                 self.logger.info("Assigned new CAN node ID: %d", self.nodeid)
             
             # 创建MCU对象 - 使用标准方法
@@ -129,10 +129,10 @@ class FeederCabinet:
             
             # 设置必要的CAN总线参数
             config_parser.set(section_name, 'canbus_uuid', self.canbus_uuid)
-            config_parser.set(section_name, 'canbus_interface', self.can_interface)
+            config_parser.set(section_name, 'canbus_interface', self.canbus_interface)
             
             self.logger.info("Created MCU config with canbus_uuid: %s, canbus_interface: %s", 
-                             self.canbus_uuid, self.can_interface)
+                             self.canbus_uuid, self.canbus_interface)
             
             # 创建新的ConfigWrapper对象
             from configfile import ConfigWrapper
@@ -148,7 +148,7 @@ class FeederCabinet:
             self._mcu.register_config_callback(self._build_config)
             self._mcu.register_response(self._handle_cabinet_response, "cabinet_response")
             
-            self.logger.info("FeederCabinet MCU initialized with interface: %s", self.can_interface)
+            self.logger.info("FeederCabinet MCU initialized with interface: %s", self.canbus_interface)
         except self.printer.config_error as e:
             self.logger.error("Failed to initialize CAN communication: %s", str(e))
             self.gcode.respond_info("错误: 送料柜CAN通信初始化失败 - %s" % str(e))
