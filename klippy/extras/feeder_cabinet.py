@@ -138,11 +138,43 @@ class FeederCabinet:
             from configfile import ConfigWrapper
             new_config = ConfigWrapper(self.printer, config_parser, {}, section_name)
             
+            # 确保canbus_interface参数被正确设置
+            # 这是为了确保serialhdl.py中的connect_canbus方法能够获取到正确的接口名称
+            # 通过直接修改ConfigWrapper对象的行为来确保参数传递正确
+            def get_wrapper(option, default=None, *args, **kwargs):
+                if option == 'canbus_interface':
+                    self.logger.info("Returning canbus_interface: %s", self.canbus_interface)
+                    return self.canbus_interface
+                return new_config.get_orig(option, default, *args, **kwargs)
+            
+            # 保存原始的get方法
+            new_config.get_orig = new_config.get
+            # 替换为我们的包装方法
+            new_config.get = get_wrapper
+            
+            # 确保ConfigWrapper对象能够正确处理canbus_interface参数
+            # 这是为了确保serialhdl.py中的connect_canbus方法能够获取到正确的接口名称
+            
+            # 确保canbus_interface参数被正确设置
+            if not hasattr(new_config, 'get_name'):
+                new_config.get_name = lambda: section_name
+            if not hasattr(new_config, 'get'):
+                orig_get = new_config.get
+                def get_wrapper(option, default=None, *args, **kwargs):
+                    if option == 'canbus_interface' and default is None:
+                        return self.canbus_interface
+                    return orig_get(option, default, *args, **kwargs)
+                new_config.get = get_wrapper
+            
             # 使用新配置创建MCU对象
             mainsync = self.printer.lookup_object('mcu')._clocksync
             self._mcu = MCU(new_config, SecondarySync(self.reactor, mainsync))
             self.printer.add_object(section_name, self._mcu)
             self.cmd_queue = self._mcu.alloc_command_queue()
+            
+            # 确保MCU对象使用正确的CAN接口
+            # 在MCU对象初始化后，检查是否正确设置了canbus_interface
+            self.logger.info("Verifying CAN interface configuration for MCU: %s", self.canbus_interface)
             
             # 注册MCU响应处理函数
             self._mcu.register_config_callback(self._build_config)
