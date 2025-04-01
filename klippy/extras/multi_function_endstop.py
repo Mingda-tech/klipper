@@ -44,7 +44,7 @@ class MultiFunctionEndstop:
         # get samples
         self.samples = config.getint('samples', 1, minval=1)
         self.sample_retract_dist = config.getfloat(
-            'sample_retract_dist', above=0.)
+            'sample_retract_dist', 0., above=0.)
         self.sample_extend_compensation = config.getfloat(
             'sample_extend_compensation', 1.)
         # logging.info("samples:%d" % (self.samples,))
@@ -150,8 +150,8 @@ class MultiFunctionEndstop:
         # Register event handlers
         # self.printer.register_event_handler("klippy:connect",
         #                                     self._handle_connect)
-        self.printer.register_event_handler('klippy:ready',
-                                            self._handle_ready)
+        self.printer.register_event_handler('klippy:mcu_identify',
+                                            self._handle_mcu_identify)
     
     # Register event handlers
     # def _handle_connect(self):
@@ -168,7 +168,7 @@ class MultiFunctionEndstop:
         #     self.stepper_objects[self.axis] = None
         #     raise self.printer.command_error(
         #             "Can't find the %s axis!" % (self.axis,))
-    def _handle_ready(self):
+    def _handle_mcu_identify(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         if ((self.mode == 'calibration_z_offset') or 
             (self.mode == 'calibration_zoffset')):
@@ -196,7 +196,6 @@ class MultiFunctionEndstop:
                 self.mcu_endstop.add_stepper(stepper)
                 flag = 1
         if not flag:
-            # raise error("Can't find the %s axis!" % (self.axis,))
             self.stepper_objects[self.axis] = None
             raise self.printer.command_error(
                     "Can't find the %s axis!" % (self.axis,))
@@ -238,11 +237,11 @@ class MultiFunctionEndstop:
         except self.printer.command_error:
             if self.printer.is_shutdown():
                 raise self.printer.command_error(
-                    "Homing failed due to printer shutdown")
+                    "Multi function endstop failed due to printer shutdown")
             raise
         if hmove.check_no_movement() is not None:
             raise self.printer.command_error(
-                "Probe triggered prior to movement")
+                "Multi function endstop triggered prior to movement")
         return epos
 
     def multi_function_endstop_begin(self, gcmd):
@@ -354,7 +353,7 @@ class MultiFunctionEndstop:
                 # Allow axis_twist_compensation to update results
                 self.printer.send_event("probe:update_results", epos)
                 # Report results
-                self.gcode.respond_info("MEF trigger : %s=%.3f"
+                self.gcode.respond_info("MFE trigger : %s=%.3f"
                                 % (self.axis, epos[axis_to_num],))
                 samples_sum += epos[axis_to_num]
                 # 回缩

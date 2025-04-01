@@ -13,7 +13,7 @@ class ADCSensor:
         self.runout_range = config.getfloatlist('runout_range', count=2)
         self.inversion = config.getboolean('inversion', False)
         self.raw_value = 0
-        self.state = "triggered" # or "open"
+        self.state = "triggered" # or "open", default state
         # self.is_log =config.getboolean('logging', False)
         self.report_time = config.getfloat('report_time', ADC_REPORT_TIME)
         self.sample_time = config.getfloat('sample_time', ADC_SAMPLE_TIME)
@@ -57,7 +57,7 @@ class ADCSensor:
 
     cmd_ADC_SENSOR_QUERY_help = "Query the adc sensor value"
     def cmd_ADC_SENSOR_QUERY(self, gcmd):
-        data = self.get_status()
+        data = self.get_status(None)
         response = "%s: %s" % (str(self.adc_name), data, )
         self.gcode.respond_info(response)
         return
