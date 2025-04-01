@@ -56,20 +56,15 @@ class FeederCabinet:
         self.extruder_num = 0  # 默认第一个挤出头
         
         # 初始化MCU对象
-        mainsync = self.printer.lookup_object('mcu')._clocksync
         self._mcu = None
         self.cmd_queue = None
-        self.send_id = None
-        self.receive_id = None
         self.nodeid = None
         
-        # 注册CAN总线ID
-        self.printer.load_object(config, 'canbus_ids')
+        # 保存原始配置以供后续使用
+        self._mcu_config = config
         
-        # 创建MCU配置部分 - 直接使用原始配置，不尝试修改
-        self._mcu_config = config.getsection(self.name)
-        # ConfigWrapper对象没有set方法，不能直接修改配置
-        # canbus_uuid和canbus_interface将从_mcu_config中读取
+        # 注册CAN总线ID服务
+        self.printer.load_object(config, 'canbus_ids')
         
         # 注册事件处理器
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
@@ -110,11 +105,6 @@ class FeederCabinet:
                     "Invalid canbus_uuid format '%s'. Must be a valid hexadecimal string (e.g. F01000000601)" 
                     % (self.canbus_uuid,))
             
-            # 创建MCU对象
-            from mcu import MCU, MCU_trsync
-            from clocksync import SecondarySync
-            import configparser
-            
             # 获取CAN总线节点ID
             cbid = self.printer.lookup_object('canbus_ids')
             try:
@@ -124,35 +114,25 @@ class FeederCabinet:
             except self.printer.config_error:
                 # 如果不存在，则添加新的UUID并获取节点ID
                 self.logger.info("Adding new UUID to canbus_ids with interface: %s", self.can_interface)
-                # 创建一个临时配置对象用于添加UUID
-                from configfile import ConfigWrapper
-                import configparser
-                temp_config_parser = configparser.ConfigParser()
-                temp_section = "temp_section"
-                temp_config_parser.add_section(temp_section)
-                temp_config = ConfigWrapper(self.printer, temp_config_parser, {}, temp_section)
-                
-                self.nodeid = cbid.add_uuid(temp_config, self.canbus_uuid, self.can_interface)
+                self.nodeid = cbid.add_uuid(self._mcu_config, self.canbus_uuid, self.can_interface)
                 self.logger.info("Assigned new CAN node ID: %d", self.nodeid)
             
-            # 创建一个新的配置对象，包含必要的CAN总线参数
-            # ConfigWrapper对象没有set方法，所以我们需要创建一个新的配置
+            # 创建MCU对象 - 使用标准方法
+            from mcu import MCU, MCU_trsync
+            from clocksync import SecondarySync
+            import configparser
+            
+            # 创建一个新的配置对象
             config_parser = configparser.ConfigParser()
-            section_name = "mcu " + self.name
-            if not config_parser.has_section(section_name):
-                config_parser.add_section(section_name)
+            section_name = "mcu feeder_cabinet_mcu"
+            config_parser.add_section(section_name)
             
-            # 从原始配置复制所有参数
-            for option in self._mcu_config.get_prefix_options(''):
-                value = self._mcu_config.get(option)
-                config_parser.set(section_name, option, value)
-            
-            # 设置CAN总线参数 - 确保使用正确的接口名称
+            # 设置必要的CAN总线参数
             config_parser.set(section_name, 'canbus_uuid', self.canbus_uuid)
             config_parser.set(section_name, 'canbus_interface', self.can_interface)
             
-            self.logger.info("Created config with section: %s, canbus_interface: %s", 
-                             section_name, self.can_interface)
+            self.logger.info("Created MCU config with canbus_uuid: %s, canbus_interface: %s", 
+                             self.canbus_uuid, self.can_interface)
             
             # 创建新的ConfigWrapper对象
             from configfile import ConfigWrapper
