@@ -19,6 +19,8 @@ RANGE_CHECK_COUNT = 4
 class PrinterADCtoTemperature:
     def __init__(self, config, adc_convert):
         self.adc_convert = adc_convert
+        self.sensor_min_temp = config.getfloat('sensor_min_temp', None)
+        self.sensor_max_temp = config.getfloat('sensor_max_temp', None)
         ppins = config.get_printer().lookup_object('pins')
         self.mcu_adc = ppins.setup_pin('adc', config.get('sensor_pin'))
         self.mcu_adc.setup_adc_callback(REPORT_TIME, self.adc_callback)
@@ -32,6 +34,10 @@ class PrinterADCtoTemperature:
         temp = self.adc_convert.calc_temp(read_value)
         self.temperature_callback(read_time + SAMPLE_COUNT * SAMPLE_TIME, temp)
     def setup_minmax(self, min_temp, max_temp):
+        if self.sensor_min_temp is not None:
+            min_temp = min(min_temp, self.sensor_min_temp)
+        if self.sensor_max_temp is not None:
+            max_temp = max(max_temp, self.sensor_max_temp)
         arange = [self.adc_convert.calc_adc(t) for t in [min_temp, max_temp]]
         min_adc, max_adc = sorted(arange)
         self.mcu_adc.setup_adc_sample(SAMPLE_TIME, SAMPLE_COUNT,
