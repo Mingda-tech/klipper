@@ -63,11 +63,10 @@ class FeederCabinet:
         self.receive_id = None
         self.nodeid = None
         
-        # 创建MCU配置部分
+        # 创建MCU配置部分 - 直接使用原始配置，不尝试修改
         self._mcu_config = config.getsection(self.name)
-        # 添加canbus_uuid到MCU配置
-        self._mcu_config.set('canbus_uuid', self.canbus_uuid)
-        self._mcu_config.set('canbus_interface', self.can_interface)
+        # ConfigWrapper对象没有set方法，不能直接修改配置
+        # canbus_uuid和canbus_interface将从_mcu_config中读取
         
         # 注册事件处理器
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
@@ -108,9 +107,31 @@ class FeederCabinet:
             # 创建MCU对象
             from mcu import MCU, MCU_trsync
             from clocksync import SecondarySync
+            import configparser
             
+            # 创建一个新的配置对象，包含必要的CAN总线参数
+            # ConfigWrapper对象没有set方法，所以我们需要创建一个新的配置
+            config_parser = configparser.ConfigParser()
+            section_name = self._mcu_config.get_name()
+            if not config_parser.has_section(section_name):
+                config_parser.add_section(section_name)
+            
+            # 从原始配置复制所有参数
+            for option in self._mcu_config.get_prefix_options(''):
+                value = self._mcu_config.get(option)
+                config_parser.set(section_name, option, value)
+            
+            # 设置CAN总线参数
+            config_parser.set(section_name, 'canbus_uuid', self.canbus_uuid)
+            config_parser.set(section_name, 'canbus_interface', self.can_interface)
+            
+            # 创建新的ConfigWrapper对象
+            from configfile import ConfigWrapper
+            new_config = ConfigWrapper(self.printer, config_parser, {}, section_name)
+            
+            # 使用新配置创建MCU对象
             mainsync = self.printer.lookup_object('mcu')._clocksync
-            self._mcu = MCU(self._mcu_config, SecondarySync(self.reactor, mainsync))
+            self._mcu = MCU(new_config, SecondarySync(self.reactor, mainsync))
             self.printer.add_object("mcu " + self.name, self._mcu)
             self.cmd_queue = self._mcu.alloc_command_queue()
             
