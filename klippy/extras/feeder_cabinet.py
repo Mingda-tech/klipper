@@ -47,7 +47,7 @@ class FeederCabinet:
         
         # 配置CAN通信
         self.canbus_uuid = config.get('canbus_uuid')
-        self.canbus_interface = config.get('canbus_interface', 'can0')
+        self.canbus_interface = config.get('canbus_interface', 'can1')
         
         # 状态变量
         self.state = STATE_IDLE
