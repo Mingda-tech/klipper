@@ -63,6 +63,9 @@ class FeederCabinet:
         self.receive_id = None
         self.nodeid = None
         
+        # 注册CAN总线ID
+        self.printer.load_object(config, 'canbus_ids')
+        
         # 创建MCU配置部分 - 直接使用原始配置，不尝试修改
         self._mcu_config = config.getsection(self.name)
         # ConfigWrapper对象没有set方法，不能直接修改配置
@@ -108,6 +111,17 @@ class FeederCabinet:
             from mcu import MCU, MCU_trsync
             from clocksync import SecondarySync
             import configparser
+            
+            # 获取CAN总线节点ID
+            cbid = self.printer.lookup_object('canbus_ids')
+            try:
+                # 尝试获取已存在的节点ID
+                self.nodeid = cbid.get_nodeid(self.canbus_uuid)
+                self.logger.info("Using existing CAN node ID: %d", self.nodeid)
+            except self.printer.config_error:
+                # 如果不存在，则添加新的UUID并获取节点ID
+                self.nodeid = cbid.add_uuid(self._mcu_config, self.canbus_uuid, self.can_interface)
+                self.logger.info("Assigned new CAN node ID: %d", self.nodeid)
             
             # 创建一个新的配置对象，包含必要的CAN总线参数
             # ConfigWrapper对象没有set方法，所以我们需要创建一个新的配置
