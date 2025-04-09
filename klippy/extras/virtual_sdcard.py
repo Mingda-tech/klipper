@@ -568,9 +568,6 @@ class VirtualSD:
             self.gcode.run_script_from_command("G90")  # 设置绝对坐标模式
             self.gcode.run_script_from_command("M83")  # 设置相对挤出模式
 
-            # 2. 执行回零
-            self.gcode.run_script_from_command("G28 X Y S")
-            logging.info("RESTORE_PRINT: Homing completed")
             
             # 3. 设置Z坐标值
             if 'position' in state_data and 'extruder' in state_data:
@@ -578,31 +575,22 @@ class VirtualSD:
                     pos = state_data['position']
                     active_extruder = state_data['extruder']['active_extruder']
                     z_pos = float(pos['z'])
-                    
-                    # 获取Variables对象
-                    save_variables = self.printer.lookup_object('save_variables')
-                    status = save_variables.get_status(self.printer.get_reactor().monotonic())
-                    variables = status.get('variables', {})
-                    e1_zoffset = float(variables.get('e1_zoffset', 0))
-                    z_lift_xyhome = float(variables.get('z_lift_xyhome', 5))
-                    logging.info(f"RESTORE_PRINT: e1_zoffset: {e1_zoffset}")
-
-                    # 根据活跃挤出头设置Z坐标
-                    z_pos += z_lift_xyhome
-                    if active_extruder == 'extruder1':  # 右头
-                        z_pos += e1_zoffset
-                        z_pos += 0.2
-                    
+                                       
                     # 设置当前Z坐标值
                     self.gcode.run_script_from_command(f"SET_KINEMATIC_POSITION Z={z_pos}")
                     logging.info(f"RESTORE_PRINT: Set Z position to {z_pos} for {active_extruder}")
                     
-                    if active_extruder == 'extruder1':  # 右头
-                        self.gcode.run_script_from_command(f"T1 R0")
                 except Exception as e:
                     logging.exception("RESTORE_PRINT: Error setting Z position")
 
-            # 3. 等待温度
+            # 执行回零
+            self.gcode.run_script_from_command("G28 X Y S")
+            logging.info("RESTORE_PRINT: Homing completed")
+
+            if active_extruder == 'extruder1':  # 右头
+                self.gcode.run_script_from_command(f"T1 R0")
+                
+            # 等待温度
             if 'temperatures' in state_data:
                 temps = state_data['temperatures']
                 if 'extruder' in temps:
@@ -655,9 +643,11 @@ class VirtualSD:
                 # 设置绝对坐标模式
                 self.gcode.run_script_from_command("G90")
                 # 先移动到XY轴位置
-                self.gcode.run_script_from_command(f"G1 X{pos['x']} Y{pos['y']} F3000")
+                self.gcode.run_script_from_command(f"G0 X{pos['x']} Y{pos['y']} F3000")
+                self.gcode.run_script_from_command("M400")
                 # 移动到Z轴位置
-                self.gcode.run_script_from_command(f"G1 Z{pos['z']} F600")
+                self.gcode.run_script_from_command(f"G0 Z{pos['z']} F600")
+                self.gcode.run_script_from_command("M400")
                 # 先设置E轴位置为0
                 self.gcode.run_script_from_command("G92 E0")
                 logging.info("RESTORE_PRINT: Position restored to X:%.2f Y:%.2f Z:%.2f E:%.2f", 
