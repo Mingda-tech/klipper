@@ -593,12 +593,8 @@ class VirtualSD:
             # 等待温度
             if 'temperatures' in state_data:
                 temps = state_data['temperatures']
-                if 'extruder' in temps:
-                    self.gcode.run_script_from_command(f"M109 T0 S{float(temps['extruder'])}")
-                if 'extruder1' in temps:
-                    self.gcode.run_script_from_command(f"M109 T1 S{float(temps['extruder1'])}")
-                if 'bed' in temps:
-                    self.gcode.run_script_from_command(f"M190 S{float(temps['bed'])}")
+                print_temp = max(float(temps[active_extruder]), 170.0)
+                self.gcode.run_script_from_command(f"M109 S{print_temp}")
                 logging.info("RESTORE_PRINT: Temperature reached")
 
             # 4. 加载文件
