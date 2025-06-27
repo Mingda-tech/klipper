@@ -15,32 +15,40 @@ class ManualStepper:
         if config.get('endstop_pin', None) is not None:
             self.can_home = True
             self.rail = stepper.PrinterRail(
-                config, need_position_minmax=False, default_position_endstop=0.)
+                config, need_position_minmax=False,
+                default_position_endstop=0.)
             self.steppers = self.rail.get_steppers()
+            self.homed_flag = False
         else:
             self.can_home = False
             self.rail = stepper.PrinterStepper(config)
             self.steppers = [self.rail]
             #----------------------------------------------
-            self.config_pa = config.getfloat('pressure_advance', 0., minval=0.)
+            self.config_pa = config.getfloat(
+                'pressure_advance', 0., minval=0.)
             self.config_smooth_time = config.getfloat(
-                    'pressure_advance_smooth_time', 0.040, above=0., maxval=.200)
-            self.sk_extruder = ffi_main.gc(ffi_lib.extruder_stepper_alloc(),
-                                           ffi_lib.extruder_stepper_free)
+                'pressure_advance_smooth_time', 0.040, above=0., maxval=.200)
+            self.sk_extruder = ffi_main.gc(
+                ffi_lib.extruder_stepper_alloc(),
+                ffi_lib.extruder_stepper_free)
             self.rail.set_stepper_kinematics(self.sk_extruder)
             # Register commands
             self.printer.register_event_handler("klippy:connect",
                                                 self._handle_connect)
             #----------------------------------------------
         self.velocity = config.getfloat('velocity', 5., above=0.)
-        self.accel = self.homing_accel = config.getfloat('accel', 0., minval=0.)
+        self.accel = self.homing_accel = config.getfloat(
+            'accel', 0., minval=0.)
         self.next_cmd_time = 0.
         #----------------------------------------------
         self.pressure_advance = self.pressure_advance_smooth_time = 0.
         self.motion_queue = None
-        self.sync_advance_distance = config.getfloat('sync_advance_distance', 0., minval=0.)
-        self.sync_advance_velocity = config.getfloat('sync_advance_velocity', self.velocity, above=0.)
-        self.sync_advance_accel = config.getfloat('sync_advance_accel', self.accel, minval=0.)
+        self.sync_advance_distance = config.getfloat(
+            'sync_advance_distance', 0., minval=0.)
+        self.sync_advance_velocity = config.getfloat(
+            'sync_advance_velocity', self.velocity, above=0.)
+        self.sync_advance_accel = config.getfloat(
+            'sync_advance_accel', self.accel, minval=0.)
         self.my_self = self
         #----------------------------------------------
 
@@ -53,13 +61,17 @@ class ManualStepper:
         # Register commands
         self.stepper_name = config.get_name().split()[1]
         gcode = self.printer.lookup_object('gcode')
-        gcode.register_mux_command('MANUAL_STEPPER', "STEPPER",
-                                   self.stepper_name, self.cmd_MANUAL_STEPPER,
-                                   desc=self.cmd_MANUAL_STEPPER_help)
+        gcode.register_mux_command(
+            'MANUAL_STEPPER', "STEPPER", self.stepper_name,
+            self.cmd_MANUAL_STEPPER, desc=self.cmd_MANUAL_STEPPER_help)
 
-        gcode.register_mux_command("SYNC_MANUAL_STEPPER", "STEPPER",
-                                   self.stepper_name, self.cmd_SYNC_MANUAL_MOTION,
-                                   desc=self.cmd_SYNC_MANUAL_MOTION_help)
+        gcode.register_mux_command(
+            'SYNC_MANUAL_STEPPER', 'STEPPER', self.stepper_name,
+            self.cmd_SYNC_MANUAL_MOTION, desc=self.cmd_SYNC_MANUAL_MOTION_help)
+        gcode.register_mux_command(
+            'MANUAL_STEPPER_ROTATION_DISTANCE', "STEPPER",
+            self.stepper_name, self.cmd_MANUAL_STEPPER_ROTATION_DISTANCE,
+            desc=self.cmd_MANUAL_STEPPER_ROTATION_DISTANCE_help)
         self.printer.add_object('manual_stepper '+self.stepper_name, self)
 
     #----------------------------------------------
@@ -68,9 +80,12 @@ class ManualStepper:
         toolhead.register_step_generator(self.rail.generate_steps)
         self._set_pressure_advance(self.config_pa, self.config_smooth_time)
     def get_status(self, eventtime):
-        return {'pressure_advance': self.pressure_advance,
+        state = {'pressure_advance': self.pressure_advance,
                 'smooth_time': self.pressure_advance_smooth_time,
                 'motion_queue': self.motion_queue}
+        if self.can_home:
+            state['homed'] = self.homed_flag
+        return state
     def _set_pressure_advance(self, pressure_advance, smooth_time):
         old_smooth_time = self.pressure_advance_smooth_time
         if not self.pressure_advance:
@@ -97,7 +112,8 @@ class ManualStepper:
                 extruder = self.printer.lookup_object(self.motion_queue, None)
                 if extruder is None:
                     raise self.printer.command_error(
-                        "'%s' is not a valid extruder." % (self.motion_queue,))
+                            "'%s' is not a valid extruder." %
+                            (self.motion_queue,))
                 extruder.del_sync_stepper(self.stepper_name)
             old_motion_queue = self.motion_queue
             self.rail.set_trapq(self.trapq)
@@ -105,8 +121,8 @@ class ManualStepper:
             return old_motion_queue
         extruder = self.printer.lookup_object(extruder_name, None)
         if extruder is None:
-            raise self.printer.command_error("'%s' is not a valid extruder."
-                                             % (extruder_name,))
+            raise self.printer.command_error(
+                    "'%s' is not a valid extruder." % (extruder_name,))
         if not extruder.has_multi_sync():
             # The extruder only supports the synchronization of a single motor.
             # So we need to unsynchronize the other motors.
@@ -114,7 +130,8 @@ class ManualStepper:
             for name, obj_name in sync_steppers.items():
                 obj = self.printer.lookup_object(obj_name)
                 obj.sync_to_extruder(None)
-        extruder.add_sync_stepper(self.stepper_name, 'manual_stepper '+self.stepper_name)
+        extruder.add_sync_stepper(
+            self.stepper_name, 'manual_stepper '+self.stepper_name)
         #self.rail.set_stepper_kinematics(self.sk_extruder)
         self._set_pressure_advance(extruder.extruder_stepper.pressure_advance,
             extruder.extruder_stepper.pressure_advance_smooth_time)
@@ -122,7 +139,8 @@ class ManualStepper:
         self.rail.set_trapq(extruder.get_trapq())
         self.motion_queue = extruder_name
         self.do_enable(1)
-        # logging.info("name:%s motion:%s", self.stepper_name, self.motion_queue)
+        # logging.info("name:%s motion:%s" %
+        #     (self.stepper_name, self.motion_queue,))
         return None
     def get_sync_extruder_name(self):
         return motion_queue
@@ -154,6 +172,8 @@ class ManualStepper:
             for s in self.steppers:
                 se = stepper_enable.lookup_enable(s.get_name())
                 se.motor_disable(self.next_cmd_time)
+            if self.can_home:
+                self.homed_flag = False
         self.sync_print_time()
     def do_set_position(self, setpos):
         self.rail.set_position([setpos, 0., 0.])
@@ -185,6 +205,8 @@ class ManualStepper:
         phoming = self.printer.lookup_object('homing')
         phoming.manual_home(self, endstops, pos, speed,
                             triggered, check_trigger)
+        if self.can_home:
+            self.homed_flag = True
     cmd_MANUAL_STEPPER_help = "Command a manually configured stepper"
     def cmd_MANUAL_STEPPER(self, gcmd):
         if self.motion_queue is not None:
@@ -237,6 +259,29 @@ class ManualStepper:
         self.sync_to_extruder(ename)
         gcmd.respond_info("Stepper '%s' now syncing with '%s'"
                           % (self.stepper_name, ename))
+    cmd_MANUAL_STEPPER_ROTATION_DISTANCE_help = \
+        "Set or get manual_stepper rotation distance."
+    def cmd_MANUAL_STEPPER_ROTATION_DISTANCE(self, gcmd):
+        rotation_dist = gcmd.get_float('DISTANCE', None)
+        if rotation_dist is not None:
+            if not rotation_dist:
+                raise gcmd.error("rotation_distance can not be zero")
+            invert_dir, orig_invert_dir = self.rail.get_dir_inverted()
+            next_invert_dir = orig_invert_dir
+            if rotation_dist < 0.:
+                next_invert_dir = not orig_invert_dir
+                rotation_dist = -rotation_dist
+            toolhead = self.printer.lookup_object('toolhead')
+            toolhead.flush_step_generation()
+            self.rail.set_rotation_distance(rotation_dist)
+            self.rail.set_dir_inverted(next_invert_dir)
+        else:
+            rotation_dist, spr = self.rail.get_rotation_distance()
+        invert_dir, orig_invert_dir = self.rail.get_dir_inverted()
+        if invert_dir != orig_invert_dir:
+            rotation_dist = -rotation_dist
+        gcmd.respond_info("manual_stepper '%s' rotation_distance is %0.6f"
+                          % (self.stepper_name, rotation_dist))
 
 def load_config_prefix(config):
     return ManualStepper(config)
