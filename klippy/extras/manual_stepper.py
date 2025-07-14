@@ -50,6 +50,59 @@ class ManualStepper:
         self.sync_advance_accel = config.getfloat(
             'sync_advance_accel', self.accel, minval=0.)
         self.my_self = self
+        self.show_info = 1
+        # funtion button
+        self.funtion_button = config.get('function_button', None)
+        if self.funtion_button == 'set_rotation_distance':
+            # button1, must be set
+            self.button_list = {}
+            buttons = self.printer.load_object(config, "buttons")
+            button1_pin = config.get('button1_pin')
+            press_set_data = config.getfloat(
+                'button1_press_set_data', None)
+            release_set_data = config.getfloat(
+                'button1_release_set_data', None)
+            self.button_list.update(
+                {'button1': {
+                    'pin': button1_pin,
+                    'press': press_set_data,
+                    'release': release_set_data,
+                    'state': None,}})
+            if config.get('button1_analog_range', None) is None:
+                buttons.register_debounce_button(
+                    button1_pin, self.button1_callback, config)
+            else:
+                amin, amax = config.getfloatlist(
+                    'button1_analog_range', count=2)
+                pullup = config.getfloat(
+                    'button1_analog_pullup_resistor', 4700., above=0.)
+                buttons.register_debounce_adc_button(
+                    button1_pin, amin, amax, pullup,
+                    self.button1_callback, config)
+            # button2, if not None:
+            button2_pin = config.get('button2_pin', None)
+            if button2_pin is not None:
+                press_set_data = config.getfloat(
+                    'button2_press_set_data', None)
+                release_set_data = config.getfloat(
+                    'button2_release_set_data', None)
+                self.button_list.update(
+                    {'button2': {
+                        'pin': button2_pin,
+                        'press': press_set_data,
+                        'release': release_set_data,
+                        'state': None,}})
+                if config.get('button2_analog_range', None) is None:
+                    buttons.register_debounce_button(
+                        button2_pin, self.button2_callback, config)
+                else:
+                    amin, amax = config.getfloatlist(
+                        'button2_analog_range', count=2)
+                    pullup = config.getfloat(
+                        'button2_analog_pullup_resistor', 4700., above=0.)
+                    buttons.register_debounce_adc_button(
+                        button2_pin, amin, amax, pullup,
+                        self.button2_callback, config)
         #----------------------------------------------
 
         self.trapq = ffi_main.gc(ffi_lib.trapq_alloc(), ffi_lib.trapq_free)
@@ -65,6 +118,9 @@ class ManualStepper:
             'MANUAL_STEPPER', "STEPPER", self.stepper_name,
             self.cmd_MANUAL_STEPPER, desc=self.cmd_MANUAL_STEPPER_help)
 
+        gcode.register_mux_command(
+            'MANUAL_STEPPER_SHOW', "STEPPER", self.stepper_name,
+            self.cmd_MANUAL_STEPPER_SHOW, desc=self.cmd_MANUAL_STEPPER_SHOW_help)
         gcode.register_mux_command(
             'SYNC_MANUAL_STEPPER', 'STEPPER', self.stepper_name,
             self.cmd_SYNC_MANUAL_MOTION, desc=self.cmd_SYNC_MANUAL_MOTION_help)
@@ -82,7 +138,9 @@ class ManualStepper:
     def get_status(self, eventtime):
         state = {'pressure_advance': self.pressure_advance,
                 'smooth_time': self.pressure_advance_smooth_time,
-                'motion_queue': self.motion_queue}
+                'motion_queue': self.motion_queue,
+                'rotation_distance': self.steppers[0].get_rotation_distance(),
+                'show_info': self.show_info,}
         if self.can_home:
             state['homed'] = self.homed_flag
         return state
@@ -153,6 +211,63 @@ class ManualStepper:
             self.sync_to_extruder(old_sync)
             return True
         return False
+    
+    # button callback function
+    def button1_callback(self, eventtime, state):
+        if self.funtion_button == 'set_rotation_distance':
+            if state:
+                rotation_dist = self.button_list['button1']['press']
+                state_name = 'PRESSED'
+            else:
+                rotation_dist = self.button_list['button1']['release']
+                state_name = 'RELEASED'
+            # set the rotation distance
+            if rotation_dist is not None:
+                invert_dir, orig_invert_dir = (
+                    self.steppers[0].get_dir_inverted())
+                next_invert_dir = orig_invert_dir
+                if rotation_dist < 0.:
+                    next_invert_dir = not orig_invert_dir
+                    rotation_dist = -rotation_dist
+                # toolhead = self.printer.lookup_object('toolhead')
+                # toolhead.flush_step_generation()
+                for s in self.steppers:
+                    s.set_rotation_distance(rotation_dist)
+                    s.set_dir_inverted(next_invert_dir)
+            self.button_list['button1'].update({'state': state_name})
+            # if self.show_info:
+            #     gcmd = self.printer.lookup_object('gcode')
+            #     gcmd.respond_info(
+            #         "manual_stepper '%s' rotation_distance is %0.6f"
+            #         % (self.stepper_name, rotation_dist))
+    def button2_callback(self, eventtime, state):
+        if self.funtion_button == 'set_rotation_distance':
+            if state:
+                rotation_dist = self.button_list['button2']['press']
+                state_name = 'PRESSED'
+            else:
+                rotation_dist = self.button_list['button2']['release']
+                state_name = 'RELEASED'
+            # set the rotation distance
+            if rotation_dist is not None:
+                invert_dir, orig_invert_dir = (
+                    self.steppers[0].get_dir_inverted())
+                next_invert_dir = orig_invert_dir
+                if rotation_dist < 0.:
+                    next_invert_dir = not orig_invert_dir
+                    rotation_dist = -rotation_dist
+                # toolhead = self.printer.lookup_object('toolhead')
+                # toolhead.flush_step_generation()
+                for s in self.steppers:
+                    s.set_rotation_distance(rotation_dist)
+                    s.set_dir_inverted(next_invert_dir)
+            self.button_list['button2'].update({'state': state_name})
+            # if self.show_info:
+            #     gcmd = self.printer.lookup_object('gcode')
+            #     gcmd.respond_info(
+            #         "manual_stepper '%s' rotation_distance is %0.6f"
+            #         % (self.stepper_name, rotation_dist))
+                
     #----------------------------------------------
     def sync_print_time(self):
         toolhead = self.printer.lookup_object('toolhead')
@@ -207,6 +322,12 @@ class ManualStepper:
                             triggered, check_trigger)
         if self.can_home:
             self.homed_flag = True
+    cmd_MANUAL_STEPPER_SHOW_help = "Enable and disable the manual_stepper "\
+        "information display."
+    def cmd_MANUAL_STEPPER_SHOW(self, gcmd):
+        show_info = gcmd.get_int('SHOW', None)
+        if show_info is not None:
+            self.show_info = show_info
     cmd_MANUAL_STEPPER_help = "Command a manually configured stepper"
     def cmd_MANUAL_STEPPER(self, gcmd):
         if self.motion_queue is not None:
@@ -257,8 +378,9 @@ class ManualStepper:
     def cmd_SYNC_MANUAL_MOTION(self, gcmd):
         ename = gcmd.get('MOTION_QUEUE', None)
         self.sync_to_extruder(ename)
-        gcmd.respond_info("Stepper '%s' now syncing with '%s'"
-                          % (self.stepper_name, ename))
+        if self.show_info:
+            gcmd.respond_info("Stepper '%s' now syncing with '%s'"
+                              % (self.stepper_name, ename))
     cmd_MANUAL_STEPPER_ROTATION_DISTANCE_help = \
         "Set or get manual_stepper rotation distance."
     def cmd_MANUAL_STEPPER_ROTATION_DISTANCE(self, gcmd):
@@ -266,22 +388,24 @@ class ManualStepper:
         if rotation_dist is not None:
             if not rotation_dist:
                 raise gcmd.error("rotation_distance can not be zero")
-            invert_dir, orig_invert_dir = self.rail.get_dir_inverted()
+            invert_dir, orig_invert_dir = self.steppers[0].get_dir_inverted()
             next_invert_dir = orig_invert_dir
             if rotation_dist < 0.:
                 next_invert_dir = not orig_invert_dir
                 rotation_dist = -rotation_dist
             toolhead = self.printer.lookup_object('toolhead')
             toolhead.flush_step_generation()
-            self.rail.set_rotation_distance(rotation_dist)
-            self.rail.set_dir_inverted(next_invert_dir)
+            for s in self.steppers:
+                s.set_rotation_distance(rotation_dist)
+                s.set_dir_inverted(next_invert_dir)
         else:
-            rotation_dist, spr = self.rail.get_rotation_distance()
-        invert_dir, orig_invert_dir = self.rail.get_dir_inverted()
+            rotation_dist, spr = self.steppers[0].get_rotation_distance()
+        invert_dir, orig_invert_dir = self.steppers[0].get_dir_inverted()
         if invert_dir != orig_invert_dir:
             rotation_dist = -rotation_dist
-        gcmd.respond_info("manual_stepper '%s' rotation_distance is %0.6f"
-                          % (self.stepper_name, rotation_dist))
+        if self.show_info:
+            gcmd.respond_info("manual_stepper '%s' rotation_distance is %0.6f"
+                              % (self.stepper_name, rotation_dist))
 
 def load_config_prefix(config):
     return ManualStepper(config)
