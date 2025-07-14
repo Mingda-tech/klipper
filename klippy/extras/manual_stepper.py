@@ -211,7 +211,7 @@ class ManualStepper:
             self.sync_to_extruder(old_sync)
             return True
         return False
-    
+
     # button callback function
     def button1_callback(self, eventtime, state):
         if self.funtion_button == 'set_rotation_distance':
@@ -267,7 +267,7 @@ class ManualStepper:
             #     gcmd.respond_info(
             #         "manual_stepper '%s' rotation_distance is %0.6f"
             #         % (self.stepper_name, rotation_dist))
-                
+
     #----------------------------------------------
     def sync_print_time(self):
         toolhead = self.printer.lookup_object('toolhead')
