@@ -22,6 +22,8 @@ class SensorBase:
         self._callback = None
         self.min_sample_value = self.max_sample_value = 0
         self._report_clock = 0
+        self.sensor_min_temp = config.getfloat('sensor_min_temp', None)
+        self.sensor_max_temp = config.getfloat('sensor_max_temp', None)
         self.spi = bus.MCU_SPI_from_config(
             config, spi_mode, pin_option="sensor_pin", default_speed=4000000)
         if config_cmd is not None:
@@ -33,6 +35,10 @@ class SensorBase:
                               "thermocouple_result", oid)
         mcu.register_config_callback(self._build_config)
     def setup_minmax(self, min_temp, max_temp):
+        if self.sensor_min_temp is not None:
+            min_temp = min(min_temp, self.sensor_min_temp)
+        if self.sensor_max_temp is not None:
+            max_temp = max(max_temp, self.sensor_max_temp)
         adc_range = [self.calc_adc(min_temp), self.calc_adc(max_temp)]
         self.min_sample_value = min(adc_range)
         self.max_sample_value = max(adc_range)
