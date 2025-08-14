@@ -91,6 +91,16 @@ class MD_Dist_Probe:
         # Load models
         self.model = None
         self.models = {}
+        self.temp_t1 = config.getfloat(
+            "temperature1", 25.0, minval=thermistor.KELVIN_TO_CELSIUS)
+        self.temp_r1 = config.getfloat(
+            "resistance1", 47000.0, minval=0.)
+        self.temp_beta = config.getfloat(
+            "beta", 4041.0, above=0.)
+        self.temp_pullup = config.getfloat(
+            'pullup_resistor', 10000.0, above=0.)
+        self.temp_inline_resistor = config.getfloat(
+            'inline_resistor', 0., minval=0.)
         self.model_temp_builder = MD_Dist_Temp_Model_Builder.load(config)
         self.model_temp = None
         self.fmin = None
@@ -128,9 +138,40 @@ class MD_Dist_Probe:
         )
         self.trapq = None
 
-        mainsync = self.printer.lookup_object("mcu")._clocksync
-        self._mcu = MCU(config, SecondarySync(self.reactor, mainsync))
-        self.printer.add_object("mcu " + self.name, self._mcu)
+        # Chip options
+        dout_pin_name = config.get('dout_pin', None)
+        sclk_pin_name = config.get('sclk_pin', None)
+        if (dout_pin_name is not None) and (sclk_pin_name is not None):
+            ppins = self.printer.lookup_object('pins')
+            self.addr = config.getint('addr', 0x2A)
+            temp_pin_name = config.get('temp_pin')
+            temp_ppin = ppins.lookup_pin(temp_pin_name)
+            dout_ppin = ppins.lookup_pin(dout_pin_name)
+            sclk_ppin = ppins.lookup_pin(sclk_pin_name)
+            self._mcu = mcu = dout_ppin['chip']
+            # self.oid = mcu.create_oid()
+            if ((sclk_ppin['chip'] is not mcu) or
+                (temp_ppin['chip'] is not mcu)):
+                raise config.error("%s config error: All pins must be "
+                                "connected to the same MCU" % (self.name,))
+            self.dout_pin = dout_ppin['pin']
+            self.sclk_pin = sclk_ppin['pin']
+            self.temp_pin = temp_ppin['pin']
+            soft_i2c = config.getint('use_software_i2c', 0)
+            logging.info(
+            "md_dist_config dout_pin=%s sclk_pin=%s temp_pin=%s addr=%s"
+            " soft_i2c=%s"
+            % (self.dout_pin, self.sclk_pin, self.temp_pin, self.addr,
+               soft_i2c,))
+            mcu.add_config_cmd(
+            "md_dist_config dout_pin=%s sclk_pin=%s temp_pin=%s addr=%s"
+            " soft_i2c=%s"
+            % (self.dout_pin, self.sclk_pin, self.temp_pin, self.addr,
+               soft_i2c,))
+        else:
+            mainsync = self.printer.lookup_object("mcu")._clocksync
+            self._mcu = MCU(config, SecondarySync(self.reactor, mainsync))
+            self.printer.add_object("mcu " + self.name, self._mcu)
         self.cmd_queue = self._mcu.alloc_command_queue()
         self.mcu_probe = MD_Dist_Endstop_Wrapper(self)
 
@@ -233,8 +274,10 @@ class MD_Dist_Probe:
 
         self.inv_adc_max = 1.0 / constants.get("ADC_MAX")
         self.temp_smooth_count = constants.get("MD_DIST_ADC_SMOOTH_COUNT")
-        self.thermistor = thermistor.Thermistor(10000.0, 0.0)
-        self.thermistor.setup_coefficients_beta(25.0, 47000.0, 4041.0)
+        self.thermistor = thermistor.Thermistor(
+            self.temp_pullup, self.temp_inline_resistor)
+        self.thermistor.setup_coefficients_beta(
+            self.temp_t1, self.temp_r1, self.temp_beta)
 
         self.toolhead = self.printer.lookup_object("toolhead")
         self.trapq = self.toolhead.get_trapq()
