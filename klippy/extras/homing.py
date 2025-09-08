@@ -180,6 +180,7 @@ class Homing:
         homing_axes = [axis for axis in range(3) if forcepos[axis] is not None]
         startpos = self._fill_coord(forcepos)
         homepos = self._fill_coord(movepos)
+        self.toolhead.wait_moves()
         self.toolhead.set_position(startpos, homing_axes=homing_axes)
         # Perform first home
         endstops = [es for rail in rails for es in rail.get_endstops()]
@@ -197,6 +198,7 @@ class Homing:
             retractpos = [hp - ad * retract_r
                           for hp, ad in zip(homepos, axes_d)]
             self.toolhead.move(retractpos, hi.retract_speed)
+            self.toolhead.wait_moves()
             # Home again
             startpos = [rp - ad * retract_r
                         for rp, ad in zip(retractpos, axes_d)]
