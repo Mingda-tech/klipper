@@ -179,10 +179,14 @@ class HomingViaProbeHelper:
         self.mcu_probe = mcu_probe
         self.multi_probe_pending = False
         # Register z_virtual_endstop pin
-        self.printer.lookup_object('pins').register_chip('probe', self)
+        self.use_probe_command = config.getboolean('use_probe_command', True)
+        probe_object_name = config.get('probe_object', "probe")
+        self.printer.lookup_object('pins').register_chip(probe_object_name,
+                                                         self)
         # Register event handlers
-        self.printer.register_event_handler('klippy:mcu_identify',
-                                            self._handle_mcu_identify)
+        if self.use_probe_command:
+            self.printer.register_event_handler('klippy:mcu_identify',
+                                                self._handle_mcu_identify)
         self.printer.register_event_handler("homing:homing_move_begin",
                                             self._handle_homing_move_begin)
         self.printer.register_event_handler("homing:homing_move_end",
@@ -259,6 +263,30 @@ class ProbeSessionHelper:
                                                  minval=0.)
         self.samples_retries = config.getint('samples_tolerance_retries', 0,
                                              minval=0)
+        mode = ['decreasing', 'normal', 'plummet']
+        self.samples_mode = 'normal'
+        if self.sample_count > 1:
+            # new mode
+            self.samples_mode = config.getchoice(
+                'samples_mode', mode, 'normal')
+            if (self.samples_mode == 'decreasing'):
+                self.decr_de = config.getfloat(
+                    'decreasing_dist_end', default=.5, minval=.5)
+                self.decr_ds = config.getfloat(
+                    'decreasing_dist_start', default=self.sample_retract_dist,
+                    minval=self.decr_de)
+                self.decr_se = config.getfloat(
+                    'decreasing_speed_end', default=1., minval=.1)
+                self.decr_ss = config.getfloat(
+                    'decreasing_speed_start', default=self.speed,
+                    minval=self.decr_se)
+            elif (self.samples_mode == 'plummet'):
+                self.plummet_num = config.getint(
+                    'plummet_num', int(self.sample_count/2),
+                    1, (self.sample_count-1))
+                self.plummet_speed = config.getfloat(
+                    'plummet_speed', self.speed/2, 0.1, self.speed)
+        
         # Session state
         self.multi_probe_pending = False
         self.results = []
@@ -300,13 +328,39 @@ class ProbeSessionHelper:
         samples_retries = gcmd.get_int("SAMPLES_TOLERANCE_RETRIES",
                                        self.samples_retries, minval=0)
         samples_result = gcmd.get("SAMPLES_RESULT", self.samples_result)
+        
+        samples_mode = 'normal'
+        if samples > 1:
+            samples_mode = gcmd.get("SAMPLES_MODE", self.samples_mode)
+            decr_ds = decr_de = decr_ss = decr_se = 0.
+            plum_n = 0
+            plum_s = 0.
+            if (samples_mode == 'decreasing'):
+                decr_de = gcmd.get_float("DECR_DIST_E", self.decr_de)
+                decr_ds = gcmd.get_float("DECR_DIST_S", self.decr_ds,
+                                        minval=decr_de)
+                decr_se = gcmd.get_float("DECR_SPEED_E", self.decr_se)
+                decr_ss = gcmd.get_float("DECR_SPEED_S", self.decr_ss,
+                                        minval=decr_se)
+            elif (samples_mode == 'plummet'):
+                plum_n = gcmd.get_int("PLUMMET_NUM", self.plummet_num, 1, samples)
+                plum_s = gcmd.get_float("PLUMMET_SPEED", self.plummet_speed)
+            
         return {'probe_speed': probe_speed,
                 'lift_speed': lift_speed,
                 'samples': samples,
                 'sample_retract_dist': sample_retract_dist,
                 'samples_tolerance': samples_tolerance,
                 'samples_tolerance_retries': samples_retries,
-                'samples_result': samples_result}
+                'samples_result': samples_result,
+                'samples_mode': samples_mode,
+                'decr_dist_s': decr_ds,
+                'decr_dist_e': decr_de,
+                'decr_speed_s': decr_ss,
+                'decr_speed_e': decr_se,
+                'plummet_num': plum_n,
+                'plummet_speed': plum_s,
+            }
     def _probe(self, speed):
         toolhead = self.printer.lookup_object('toolhead')
         curtime = self.printer.get_reactor().monotonic()
@@ -328,6 +382,25 @@ class ProbeSessionHelper:
         gcode.respond_info("probe at %.3f,%.3f is z=%.6f"
                            % (epos[0], epos[1], epos[2]))
         return epos[:3]
+    def _probe_2(self, speed, pos, count):
+        toolhead = self.printer.lookup_object('toolhead')
+        curtime = self.printer.get_reactor().monotonic()
+        if 'z' not in toolhead.get_status(curtime)['homed_axes']:
+            raise self.printer.command_error("Must home before probe")
+        try:
+            epos = self.mcu_probe.probing_move_2(pos, speed, count)
+        except self.printer.command_error as e:
+            reason = str(e)
+            if "Timeout during endstop homing" in reason:
+                reason += HINT_TIMEOUT
+            raise self.printer.command_error(reason)
+        # Allow axis_twist_compensation to update results
+        self.printer.send_event("probe:update_results", epos)
+        # Report results
+        gcode = self.printer.lookup_object('gcode')
+        gcode.respond_info("probe at %.3f,%.3f is z=%.6f"
+                           % (epos[0], epos[1], epos[2]))
+        return epos[:3]
     def run_probe(self, gcmd):
         if not self.multi_probe_pending:
             self._probe_state_error()
@@ -337,25 +410,122 @@ class ProbeSessionHelper:
         retries = 0
         positions = []
         sample_count = params['samples']
-        while len(positions) < sample_count:
-            # Probe position
-            pos = self._probe(params['probe_speed'])
-            positions.append(pos)
-            # Check samples tolerance
-            z_positions = [p[2] for p in positions]
-            if max(z_positions)-min(z_positions) > params['samples_tolerance']:
-                if retries >= params['samples_tolerance_retries']:
-                    raise gcmd.error("Probe samples exceed samples_tolerance")
-                gcmd.respond_info("Probe samples exceed tolerance. Retrying...")
-                retries += 1
-                positions = []
-            # Retract
-            if len(positions) < sample_count:
-                toolhead.manual_move(
-                    probexy + [pos[2] + params['sample_retract_dist']],
-                    params['lift_speed'])
-        # Calculate result
-        epos = calc_probe_z_average(positions, params['samples_result'])
+        if (params['samples_mode'] == 'decreasing'):
+            if sample_count > 1:
+                decr_dist_v = ((params['decr_dist_s']-params['decr_dist_e'])
+                               /(sample_count-1)) # (max-min)/num
+                decr_speed_v = ((params['decr_speed_s']-params['decr_speed_e'])
+                                /(sample_count-1)) # (max-min)/num
+                decr_dist_list = [(params['decr_dist_s']-(decr_dist_v*i))
+                                  for i in range(sample_count)]
+                decr_speed_list = [(params['decr_speed_s']-(decr_speed_v*i))
+                                   for i in range(sample_count)]
+            else:
+                decr_dist_list = [params['decr_dist_s']]
+                decr_speed_list = [params['decr_speed_s']]
+            current_count = 0
+            last_z = self.z_position
+            while current_count < sample_count:
+                # Probe position
+                toolhead.wait_moves()
+                end_pos = toolhead.get_position()
+                end_pos[2] = last_z
+                # retract_dist = decr_dist_list[current_count]
+                cur_speed = decr_speed_list[current_count]
+                pos = self._probe_2(cur_speed, end_pos, current_count)
+                positions.append(pos)
+                current_count += 1
+                # Check samples tolerance
+                if ((current_count>1) and
+                    (abs(last_z-pos[2])>(2*params['samples_tolerance']))):
+                    if retries >= params['samples_tolerance_retries']:
+                        raise gcmd.error(
+                            "Probe samples exceed samples_tolerance")
+                    gcmd.respond_info(
+                        "Probe samples exceed tolerance. Retrying...")
+                    retries += 1
+                    positions = []
+                    current_count = 0
+                    last_z = self.z_position
+                else:
+                    last_z = pos[2] - max(0.3, params['samples_tolerance'])
+                # Retract
+                if current_count < sample_count:
+                    toolhead.manual_move(
+                        probexy + [decr_dist_list[current_count]],
+                        decr_speed_list[current_count])
+            # Calculate result
+            # epos = calc_probe_z_average(positions, params['samples_result'])
+            epos = positions[-1]
+            logging.info("run_probe:%s,%s,%s" %
+                (decr_dist_list, decr_speed_list, epos,))
+        elif (params['samples_mode'] == 'plummet'):
+            current_count = 0
+            tns = int(sample_count - params['plummet_num'])
+            last_z = self.z_position
+            while current_count < sample_count:
+                toolhead.wait_moves()
+                end_pos = toolhead.get_position()
+                end_pos[2] = last_z
+                if current_count < tns:
+                    if retries:
+                        cur_speed = params['plummet_speed']
+                    else:
+                        cur_speed = params['probe_speed']
+                    pos = self._probe_2(cur_speed, end_pos, current_count)
+                else:
+                    cur_speed = params['plummet_speed']
+                    pos = self._probe_2(cur_speed, end_pos, current_count)
+                    positions.append(pos)
+                    last_z = pos[2] - max(0.3, params['samples_tolerance'])
+                    # Check samples tolerance
+                    z_positions = [p[2] for p in positions]
+                    tolerance = max(z_positions) - min(z_positions)
+                    if tolerance > params['samples_tolerance']:
+                        if retries >= params['samples_tolerance_retries']:
+                            raise gcmd.error(
+                                "Probe samples exceed samples_tolerance")
+                        gcmd.respond_info(
+                            "Probe samples exceed tolerance. Retrying... %.4f"
+                            % (pos[2],))
+                        retries += 1
+                        positions = []
+                        current_count = 0
+                        last_z = self.z_position
+                        toolhead.manual_move(probexy + [pos[2]+3.0], cur_speed)
+                        continue
+                current_count += 1
+                # Retract
+                if current_count < sample_count:
+                    toolhead.manual_move(
+                        probexy + [pos[2] + params['sample_retract_dist']],
+                        cur_speed)
+            # Calculate result
+            epos = calc_probe_z_average(positions, params['samples_result'])
+        else:
+            while len(positions) < sample_count:
+                # Probe position
+                toolhead.wait_moves()
+                pos = self._probe(params['probe_speed'])
+                positions.append(pos)
+                # Check samples tolerance
+                z_positions = [p[2] for p in positions]
+                tolerance = max(z_positions)-min(z_positions)
+                if tolerance > params['samples_tolerance']:
+                    if retries >= params['samples_tolerance_retries']:
+                        raise gcmd.error(
+                            "Probe samples exceed samples_tolerance")
+                    gcmd.respond_info(
+                        "Probe samples exceed tolerance. Retrying...")
+                    retries += 1
+                    positions = []
+                # Retract
+                if len(positions) < sample_count:
+                    toolhead.manual_move(
+                        probexy + [pos[2] + params['sample_retract_dist']],
+                        params['lift_speed'])
+            # Calculate result
+            epos = calc_probe_z_average(positions, params['samples_result'])
         self.results.append(epos)
     def pull_probed_results(self):
         res = self.results
@@ -392,6 +562,7 @@ class ProbePointsHelper:
         def_move_z = config.getfloat('horizontal_move_z', 5.)
         self.default_horizontal_move_z = def_move_z
         self.speed = config.getfloat('speed', 50., above=0.)
+        self.probe_object_name = config.get('probe_object', "probe")
         self.use_offsets = False
         # Internal probing state
         self.lift_speed = self.speed
@@ -433,7 +604,7 @@ class ProbePointsHelper:
     def start_probe(self, gcmd):
         manual_probe.verify_no_manual_probe(self.printer)
         # Lookup objects
-        probe = self.printer.lookup_object('probe', None)
+        probe = self.printer.lookup_object(self.probe_object_name, None)
         method = gcmd.get('METHOD', 'automatic').lower()
         def_move_z = self.default_horizontal_move_z
         self.horizontal_move_z = gcmd.get_float('HORIZONTAL_MOVE_Z',

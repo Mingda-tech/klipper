@@ -400,10 +400,13 @@ class LoadCell:
                         {'normal': 1., 'inverted': -1.}, default="normal")
         LoadCellCommandHelper(config, self)
         # Probe interface
+        self.use_probe_command = config.getboolean('use_probe_command', True)
         self.mcu_probe = LoadCellEndstop(config, self)
-        self.cmd_helper = probe.ProbeCommandHelper(
-            config, self, self.mcu_probe.query_endstop)
-        self.probe_offsets = probe.ProbeOffsetsHelper(config)
+        if self.use_probe_command:
+            self.cmd_helper = probe.ProbeCommandHelper(
+                config, self, self.mcu_probe.query_endstop)
+            self.probe_offsets = probe.ProbeOffsetsHelper(config)
+        self.global_detection = config.getboolean('global_detection', True)
         self.probe_session = probe.ProbeSessionHelper(config, self.mcu_probe)
         # Client support:
         self.clients = ApiClientHelper(printer)
@@ -417,7 +420,8 @@ class LoadCell:
         self.printer.add_object(probe_object_name, self)
         
     def _handle_ready(self):
-        self._start_streaming()
+        if self.global_detection:
+            self._start_streaming()
         # announce calibration status on ready
         if self.is_calibrated():
             self.printer.send_event("load_cell:calibrate", self)
@@ -580,23 +584,28 @@ class LoadCell:
         return self.probe_session.get_probe_params(gcmd)
     
     def get_offsets(self):
-        return self.probe_offsets.get_offsets()
+        if self.use_probe_command:
+            return self.probe_offsets.get_offsets()
+        else:
+            return [0,0,0]
     
     def start_probe_session(self, gcmd):
         return self.probe_session.start_probe_session(gcmd)
 
     def get_status(self, eventtime):
-        status = dict(self.cmd_helper.get_status(eventtime))
+        status = {}
+        if self.use_probe_command:
+            status.update(dict(self.cmd_helper.get_status(eventtime)))
+            x_offset, y_offset, z_offset = self.get_offsets()
+            status.update({
+                'offsets': {'x': x_offset, 'y': y_offset, 'z': z_offset}
+            })
         status.update(self._force_g())
         status.update({
             'is_calibrated': self.is_calibrated(),
             'counts_per_gram': self.counts_per_gram,
             'reference_tare_counts': self.reference_tare_counts,
             'tare_counts': self.tare_counts,
-        })
-        x_offset, y_offset, z_offset = self.get_offsets()
-        status.update({
-            'offsets': {'x': x_offset, 'y': y_offset, 'z': z_offset}
         })
         return status
 
@@ -661,6 +670,7 @@ class LoadCellEndstop:
         self._trigger_time = 0.
         # 获取当前值
         trigger_completion = self._dispatch.start(print_time)
+        range_min, range_max = self.load_cell.saturation_range()
         # toolhead.wait_moves()
         if self.probing_sample_count > 0:
             self._sensor_helper.setup_home(
@@ -682,7 +692,6 @@ class LoadCellEndstop:
         need_update_data = 1
         methods = 2
         if (methods == 1):
-            range_min, range_max = self.load_cell.saturation_range()
             self.load_cell.clear_force_r() # 清除旧数据的干扰
             for the_i in range(max_wait_num):
                 # reactor.pause(reactor.monotonic() + wait_time)
@@ -700,6 +709,22 @@ class LoadCellEndstop:
         elif (methods == 2):
             for the_i in range(max_wait_num):
                 current_value = int(self.load_cell.get_force_r())
+                if (range_min>=current_value) or (range_max<=current_value):
+                    raise self._printer.command_error(
+                        "Load_Cell: Out of range: %d"
+                        % (current_value,))
+                if ((self.trigger_value_down <= range_min) or
+                    (self.trigger_value_up >= range_max) or
+                    (self.update_value_down <= range_min) or
+                    (self.update_value_up >= range_max)):
+                    self.trigger_value_down = (current_value -
+                                               self.pressure_change_value)
+                    self.trigger_value_up = (current_value +
+                                             self.pressure_change_value)
+                    self.update_value_down = (current_value -
+                                              self.flexible_pressure_change)
+                    self.update_value_up = (current_value +
+                                            self.flexible_pressure_change)
                 if (wait_num >= min_calm_num):
                     need_update_data = 0
                     break

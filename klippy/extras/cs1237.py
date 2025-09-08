@@ -55,6 +55,8 @@ class CS1237Base:
         self.sps = speed_dist[self.speed_sel]
         # self.sps = int(0.8 * self.sps)
         # Maximum number of error samples per data processing
+        self.avg_num = config.getint(
+            'number_of_averages', default=10, minval=1, maxval=64)
         self.max_error_samples_num = config.getint(
             'error_num', default=0, minval=0, maxval=10)
         self.hold_times = config.getint(
@@ -84,18 +86,20 @@ class CS1237Base:
         self.cmd_queue = self.mcu.alloc_command_queue()
         self.debug_info(
             "config_cs1237 oid=%d channel=%d gain=%d speed=%d"\
-            " dout_pin=%s sclk_pin=%s"
+            " dout_pin=%s sclk_pin=%s avg_num=%d"
             % (self.oid, self.channel_sel, self.gain_sel, self.speed_sel,
-               self.dout_pin, self.sclk_pin))
+               self.dout_pin, self.sclk_pin, self.avg_num))
         mcu.add_config_cmd(
             "config_cs1237 oid=%d channel=%d gain=%d speed=%d"\
-            " dout_pin=%s sclk_pin=%s"
+            " dout_pin=%s sclk_pin=%s avg_num=%d"
             % (self.oid, self.channel_sel, self.gain_sel, self.speed_sel,
-               self.dout_pin, self.sclk_pin))
+               self.dout_pin, self.sclk_pin, self.avg_num))
         mcu.add_config_cmd("query_cs1237 oid=%d rest_ticks=0"
                            % (self.oid,), on_restart=True)
 
         mcu.register_config_callback(self._build_config)
+
+        self.gcode = self.printer.lookup_object('gcode')
 
     def _build_config(self):
         self.query_cs1237_cmd = self.mcu.lookup_command(
@@ -117,13 +121,13 @@ class CS1237Base:
         # stop home
         self.query_cs1237_home_cmd = self.mcu.lookup_query_command(
             "query_cs1237_home oid=%c",
-            "cs1237_home_state oid=%c trigger_clock=%u",
+            "cs1237_home_state oid=%c trigger_clock=%u trigger_data=%u",
             oid=self.oid, cq=self.cmd_queue
         )
 
     def debug_info(self, msg=None):
         if (msg is not None) and (self.debug_flag):
-            logging.info("cs1237_debug: %s", msg)
+            logging.info("cs1237_debug(%s): %s", self.name, msg)
 
     def get_mcu(self):
         return self.mcu
@@ -232,15 +236,17 @@ class CS1237Base:
         # self._start_measurements()
         send_params = [self.oid, ts_oid, trigger_reason, error_reason,
              down, up, self.hold_times]
-        logging.info("setup_home: %s", send_params)
+        self.debug_info("setup_home: %s" % (send_params,))
+        # self.gcode.respond_info("setup_home: %s" % (send_params,))
         self.cs1237_home_cmd.send(send_params)
 
     def clear_home(self):
         send_params = [self.oid, 0, 0, 0, 0, 0, 0]
-        logging.info("clear_home: %s", send_params)
         self.cs1237_home_cmd.send(send_params)
         params = self.query_cs1237_home_cmd.send([self.oid])
         tclock = self.mcu.clock32_to_clock64(params['trigger_clock'])
+        self.debug_info("clear_home: %s" % (params,))
+        # self.gcode.respond_info("clear_home: %s" % (params,))
         return self.mcu.clock_to_print_time(tclock)
     
     # def setup_home(self, ts_oid, trigger_reason, error_reason, threshold):
