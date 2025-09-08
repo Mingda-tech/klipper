@@ -140,7 +140,8 @@ class ManualStepper:
                 'smooth_time': self.pressure_advance_smooth_time,
                 'motion_queue': self.motion_queue,
                 'rotation_distance': self.steppers[0].get_rotation_distance(),
-                'show_info': self.show_info,}
+                'show_info': self.show_info,
+                'position': self.get_position(),}
         if self.can_home:
             state['homed'] = self.homed_flag
         return state
@@ -201,7 +202,7 @@ class ManualStepper:
         #     (self.stepper_name, self.motion_queue,))
         return None
     def get_sync_extruder_name(self):
-        return motion_queue
+        return self.motion_queue
     def do_sync_advance_move(self, dir):
         if (self.sync_advance_distance > 0.000001):
             old_sync = self.sync_to_extruder(None)

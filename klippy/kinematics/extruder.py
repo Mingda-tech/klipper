@@ -291,10 +291,7 @@ class PrinterExtruder:
     
     #---------------------------------------------------------------------------
     def add_sync_stepper(self, name, obj):
-        if name in self.sync_steppers:
-            raise self.config_error(
-                "The '%s' stepper has been synchronized" % (name,))
-        self.sync_steppers[name] = obj
+        self.sync_steppers.update({name: obj})
     def del_sync_stepper(self, name):
         if name in self.sync_steppers:
             del self.sync_steppers[name]
