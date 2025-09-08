@@ -8,8 +8,15 @@ class MultiFunctionEndstop:
     error = configparser.Error
     def __init__(self, config):
         self.printer = config.get_printer()
-        self.logger = logging.getLogger(name="multi_function_endstop")
+        self.name = config.get_name().split()[-1]
+        if self.name == "multi_function_endstop":
+            name = None
+        else:
+            name = self.name
+        self.logger = logging.getLogger(name="MFE")
         self.logger.setLevel(logging.DEBUG)
+        
+        self.debug_flag = config.getboolean('debug', False)
 
         # get gcode
         self.gcode = self.printer.lookup_object('gcode')
@@ -34,11 +41,9 @@ class MultiFunctionEndstop:
         self.endstops = []
         # New endstop, register it
         self.mcu_endstop = ppins.setup_pin('endstop', endstop_pin)
-        # name = stepper.get_name(short=True)
-        name = "multi_function_endstop"
-        self.endstops.append((self.mcu_endstop, name))
+        self.endstops.append((self.mcu_endstop, self.name))
         query_endstops = self.printer.load_object(config, 'query_endstops')
-        query_endstops.register_endstop(self.mcu_endstop, name)
+        query_endstops.register_endstop(self.mcu_endstop, self.name)
         self.manual_probe = self.printer.load_object(config, 'manual_probe')
 
         # get samples
@@ -67,29 +72,52 @@ class MultiFunctionEndstop:
 
         # get mode
         self.mode = config.get('mode')
-        logging.info("MultiFunctionEndstop mode:%s" % (self.mode,))
+        self.logger.info("MultiFunctionEndstop name:%s mode:%s" %
+            (self.name, self.mode,))
         # This mode is used to confirm the offset of
         # the manual stepper to endstop 
         # (if the manual stepper has already returned home).
         if self.mode == 'manual_stepper_offset':
-            self.stepper_name = config.getlist('manual_stepper_name')
-            self.stepper_len = len(self.stepper_name)
-            logging.info("stepper number:%d" % (self.stepper_len,))
-            for i in list(range(0, self.stepper_len, 1)):
-                # self.stepper_pos[self.stepper_name[i]] = config.getfloatlist(
-                #                             'park_pos_%d' % (i,), count=2)
-                # self.stepper_offset[self.stepper_name[i]] = None
-                self.stepper_objects[self.stepper_name[i]] = (
-                    self.printer.lookup_object(
-                        'manual_stepper '+self.stepper_name[i]))
-                self.stepper_map[self.stepper_name[i]] = {
-                    'park_pos': config.getfloatlist('park_pos_%d' % (i,),
-                                                    count=2),
-                    'move_distance': self.move_distance,
-                    'offset': None,
-                }
-            logging.info("stepper_map: %s" % (self.stepper_map,))
-            logging.info("stepper_objects: %s" % (self.stepper_objects,))
+            # self.stepper_name = config.getlist('manual_stepper_name')
+            # self.stepper_len = len(self.stepper_name)
+            # logging.info("stepper number:%d" % (self.stepper_len,))
+            # for i in list(range(0, self.stepper_len, 1)):
+            #     # self.stepper_pos[self.stepper_name[i]] = config.getfloatlist(
+            #     #                             'park_pos_%d' % (i,), count=2)
+            #     # self.stepper_offset[self.stepper_name[i]] = None
+            #     self.stepper_objects[self.stepper_name[i]] = (
+            #         self.printer.lookup_object(
+            #             'manual_stepper '+self.stepper_name[i]))
+            #     self.stepper_map[self.stepper_name[i]] = {
+            #         'park_pos': config.getfloatlist('park_pos_%d' % (i,),
+            #                                         count=2),
+            #         'move_distance': self.move_distance,
+            #         'offset': None,
+            #     }
+            # logging.info("stepper_map: %s" % (self.stepper_map,))
+            # logging.info("stepper_objects: %s" % (self.stepper_objects,))
+            stepper_name = self.stepper_name = config.get('manual_stepper_name')
+            self.stepper_map.update({
+                stepper_name: {},
+            })
+            stepper_object = self.printer.lookup_object(
+                'manual_stepper '+stepper_name, None)
+            self.stepper_objects.update({
+                stepper_name: stepper_object,
+            })
+            self.offset_map={}
+            self.gcode.register_mux_command(
+                'MFE_MANUAL_STEPPER_OFFSET', 'NAME', name,
+                self.cmd_MFE_MANUAL_STEPPER_OFFSET,
+                desc=self.cmd_MFE_MANUAL_STEPPER_OFFSET_help)
+            self.gcode.register_mux_command(
+                'MFE_MANUAL_STEPPER_GET_OFFSET', 'NAME', name,
+                self.cmd_MFE_MANUAL_STEPPER_GET_OFFSET,
+                desc=self.cmd_MFE_MANUAL_STEPPER_GET_OFFSET_help)
+            self.gcode.register_mux_command(
+                'MFE_MANUAL_STEPPER_GET_OFFSET_DIFFERENCE', 'NAME', name,
+                self.cmd_MFE_MANUAL_STEPPER_GET_OFFSET_DIFFERENCE,
+                desc=self.cmd_MFE_MANUAL_STEPPER_GET_OFFSET_DIFFERENCE_help)
         elif self.mode == 'manual_axis_touch':
             self.axis = config.get('axis').lower()
             self.stepper_map[self.axis] = {
@@ -97,7 +125,8 @@ class MultiFunctionEndstop:
                 'move_distance': self.move_distance,
                 'touch_pos': None,
             }
-            self.gcode.register_command('MULTI_FUNCTION_ENDSTOP_AXIS_TOUCH',
+            self.gcode.register_mux_command(
+                'MULTI_FUNCTION_ENDSTOP_AXIS_TOUCH', 'NAME', name,
                 self.cmd_MULTI_FUNCTION_ENDSTOP_AXIS_TOUCH,
                 desc=self.cmd_MULTI_FUNCTION_ENDSTOP_AXIS_TOUCH_help)
         elif ((self.mode == 'calibration_z_offset') or 
@@ -128,22 +157,25 @@ class MultiFunctionEndstop:
                                                   count=2),
             }
 
-            self.gcode.register_command(
+            self.gcode.register_mux_command(
                 'MULTI_FUNCTION_ENDSTOP_CALIBRATION_TOOLHEAD_Z_OFFSET',
+                'NAME', name,
                 self.cmd_MFE_CALIBRATION_TOOLHEAD_Z_OFFSET,
                 desc=self.cmd_MFE_CALIBRATION_TOOLHEAD_Z_OFFSET_help)
-            self.gcode.register_command(
+            self.gcode.register_mux_command(
                 'MULTI_FUNCTION_ENDSTOP_CALIBRATION_PROBE_OFFSET',
+                'NAME', name,
                 self.cmd_MFE_CALIBRATION_PROBE_OFFSET,
                 desc=self.cmd_MFE_CALIBRATION_PROBE_OFFSET_help)
 
-        logging.info("MultiFunctionEndstop:%s" % (self.mode,))
 
-        # self.gcode.register_command('MULTI_FUNCTION_ENDSTOP_SET_POS',
+        # self.gcode.register_mux_command(
+        #     'MULTI_FUNCTION_ENDSTOP_SET_POS', 'NAME', name,
         #     self.cmd_MULTI_FUNCTION_ENDSTOP_SET_POS,
         #     desc=self.cmd_MULTI_FUNCTION_ENDSTOP_SET_POS_help)
 
-        # self.gcode.register_command('MULTI_FUNCTION_ENDSTOP_START',
+        # self.gcode.register_mux_command(
+        #     'MULTI_FUNCTION_ENDSTOP_START', 'NAME', name,
         #     self.cmd_START_CALIBRATION,
         #     desc=self.cmd_START_CALIBRATION_help)
         
@@ -170,6 +202,11 @@ class MultiFunctionEndstop:
         #             "Can't find the %s axis!" % (self.axis,))
     def _handle_mcu_identify(self):
         self.toolhead = self.printer.lookup_object('toolhead')
+        if self.mode == 'manual_stepper_offset':
+            stepper_obj = self.stepper_objects.get(self.stepper_name)
+            if stepper_obj is not None:
+                self.mcu_endstop.add_stepper(stepper_obj.get_steppers()[0])
+            return
         if ((self.mode == 'calibration_z_offset') or 
             (self.mode == 'calibration_zoffset')):
             probe_info = self.printer.lookup_object(
@@ -186,19 +223,18 @@ class MultiFunctionEndstop:
                 self.logger.info(
                     ("update probe offsets:%s" % 
                         (self.stepper_map['probe_offsets'],)))
-        if self.axis is None:
-            return
-        flag = 0
-        kin = self.printer.lookup_object('toolhead').get_kinematics()
-        for stepper in kin.get_steppers():
-            if stepper.is_active_axis(self.axis):
-                self.stepper_objects[self.axis] = stepper
-                self.mcu_endstop.add_stepper(stepper)
-                flag = 1
-        if not flag:
-            self.stepper_objects[self.axis] = None
-            raise self.printer.command_error(
-                    "Can't find the %s axis!" % (self.axis,))
+        if self.axis is not None:
+            flag = 0
+            kin = self.printer.lookup_object('toolhead').get_kinematics()
+            for stepper in kin.get_steppers():
+                if stepper.is_active_axis(self.axis):
+                    self.stepper_objects[self.axis] = stepper
+                    self.mcu_endstop.add_stepper(stepper)
+                    flag = 1
+            if not flag:
+                self.stepper_objects[self.axis] = None
+                raise self.printer.command_error(
+                        "Can't find the %s axis!" % (self.axis,))
 
     # get status
     def get_status(self, eventtime):
@@ -211,6 +247,14 @@ class MultiFunctionEndstop:
         #     #         'offset': self.stepper_offset,}
         #     return self.stepper_map
         return self.stepper_map
+
+    def logging_info(self, msg=None):
+        if (msg is not None) and (self.debug_flag):
+            logging.info("MFE_debug(%s): %s" % (self.name, msg,))
+
+    def respond_info(self, gcmd, msg=None):
+        if (msg is not None) and (self.debug_flag):
+            gcmd.respond_info("MFE_debug(%s): %s" % (self.name, msg,))
 
     # cmd_MULTI_FUNCTION_ENDSTOP_SET_POS_help = ""
     # def cmd_MULTI_FUNCTION_ENDSTOP_SET_POS(self, gcmd):
@@ -229,11 +273,12 @@ class MultiFunctionEndstop:
         self.deactivate_gcode.run_gcode_from_command()
 
     def manual_home_to_endstop(self, endstops, pos, speed, toolhead=None,
-                               triggered=True, check_triggered=True):
+           triggered=True, check_triggered=True, probe_pos=True):
         hmove = homing.HomingMove(self.printer, endstops, toolhead)
         # epos = None
         try:
-            epos = hmove.homing_move(pos, speed, probe_pos=True)
+            epos = hmove.homing_move(pos, speed, probe_pos,
+                        triggered=triggered, check_triggered=check_triggered)
         except self.printer.command_error:
             if self.printer.is_shutdown():
                 raise self.printer.command_error(
@@ -241,41 +286,97 @@ class MultiFunctionEndstop:
             raise
         if hmove.check_no_movement() is not None:
             raise self.printer.command_error(
-                "Multi function endstop triggered prior to movement")
+                "Multi function endstop triggered prior to movement"
+                "%s:%s" % (hmove.check_no_movement(), epos[0],))
         return epos
 
     def multi_function_endstop_begin(self, gcmd):
-        if self.mode == 'manual_stepper_offset':
-            gcmd.respond_info("multi_function_endstop_begin")
-            for i in list(range(0, self.stepper_len, 1)):
-                stepper_object = self.stepper_objects[self.stepper_name[i]]
-                self.mcu_endstop.add_stepper(stepper_object.get_steppers()[0])
-                samples_sum = 0
-                offset = 0.0
-                retract_pos = 0.0
-                pos = [self.move_distance, 0., 0., 0.]
-                retract_len = self.retract_dir * self.sample_retract_dist
-                extend_len = self.extend_dir * self.sample_extend_compensation
-                for num in list(range(0, self.samples, 1)):
-                    epos = self.manual_home_to_endstop(list(self.endstops),
-                            pos, self.move_speed, stepper_object, True, True)
-                    samples_sum += epos[0]
-                    logging.info("%s samples:%d, pos:%s" % 
-                                 (self.stepper_name[i], num, epos[0],))
-                    if self.sample_retract_dist > 0.000001:
-                        retract_pos = epos[0] + retract_len
-                        stepper_object.do_move(retract_pos, self.move_speed,
-                                               stepper_object.accel)
-                    # In multi-sample sampling,
-                    # for a predetermined displacement,
-                    # 'sample_extend_compensation' is employed to
-                    # enhance movement efficiency.
-                    pos[0] = epos[0] + extend_len
-                offset = samples_sum/self.samples
-                self.stepper_map[self.stepper_name[i]]['offset'] = offset
-                logging.info("%s: %s pos: %s" % (self.stepper_name[i], offset,
-                                stepper_object.rail.get_commanded_position()))
+        return
 
+    cmd_MFE_MANUAL_STEPPER_OFFSET_help = "Get the offset of the manual_stepper"
+    def cmd_MFE_MANUAL_STEPPER_OFFSET(self, gcmd):
+        self.respond_info(gcmd, "Start to get the offset of the manual_stepper")
+        run_gcode = "G1"
+        park_pos_x = gcmd.get_float('X', None)
+        park_pos_y = gcmd.get_float('Y', None)
+        park_pos_z = gcmd.get_float('Z', None)
+        park_pos_f = gcmd.get_float('F', None)
+        if park_pos_x is not None:
+            run_gcode += " X%.2f" % (park_pos_x)
+        if park_pos_y is not None:
+            run_gcode += " Y%.2f" % (park_pos_y)
+        if park_pos_z is not None:
+            run_gcode += " Z%.2f" % (park_pos_z)
+        if park_pos_f is not None:
+            run_gcode += " F%.2f" % (park_pos_f)
+        run_gcode + "\nM400"
+        map_name = gcmd.get('MAP', 'default')
+        stepper_object = self.stepper_objects.get(self.stepper_name)
+        if stepper_object is None:
+            raise self.printer.command_error(
+                "Not fount \"manual_stepper %s\"" % (self.stepper_name,))
+        move_distance = gcmd.get_float('MOVE')
+        move_speed = gcmd.get_float(
+            'SPEED', stepper_object.velocity, minval=1.)
+        samples_num = gcmd.get_int('SAMPLES', 1, minval=1)
+        samples_sum = 0.
+        move_dir = move_distance/abs(move_distance)
+        retract_distance = 0.
+        if samples_num > 1:
+            retract_distance = gcmd.get_float('RETRACT', 1.0)
+            retract_distance = move_dir * retract_distance
+        extend_len = retract_distance * 1.2
+        move_pos = [move_distance, 0., 0., 0.]
+        self.respond_info(gcmd, "%s pos:(%s)" % (self.stepper_name, run_gcode))
+        curtime = self.printer.get_reactor().monotonic()
+        if 'xyz' not in self.toolhead.get_status(curtime)["homed_axes"]:
+            raise self.printer.command_error("Must home before probe")
+        # 移动到指定位置
+        self.gcode.run_script_from_command(run_gcode)
+        # 开始探测
+        for num in list(range(0, samples_num, 1)):
+            epos = self.manual_home_to_endstop(list(self.endstops),
+                    move_pos, move_speed, stepper_object)
+            samples_sum += epos[0]
+            logging.info("%s: {samples:%d, pos:%s}" %
+                         (self.stepper_name, num, epos[0],))
+            if samples_num > 1:
+                retract_pos = epos[0] - retract_distance
+                stepper_object.do_move(retract_pos, move_speed,
+                                       stepper_object.accel)
+            # In multi-sample sampling,
+            # for a predetermined displacement,
+            # 'sample_extend_compensation' is employed to
+            # enhance movement efficiency.
+            move_pos[0] = epos[0] + extend_len
+        offset = round(samples_sum/samples_num, 3)
+        gcmd.respond_info("%s: %s" %
+            (self.stepper_name, offset))
+        self.stepper_map[self.stepper_name].update({
+            map_name: {
+                'offset': offset,
+            }
+        })
+        return 
+    cmd_MFE_MANUAL_STEPPER_GET_OFFSET_help = "Get the offset"
+    def cmd_MFE_MANUAL_STEPPER_GET_OFFSET(self, gcmd):
+        map_name = gcmd.get('MAP', 'default')
+        if map_name not in self.offset_map:
+            gcmd.respond_info("Not fount %s" % (map_name,))
+            return
+        gcmd.respond_info("%s:%s" % (self.offset_map[map_name]['stepper_name'],
+            self.offset_map[map_name]['offset']))
+    cmd_MFE_MANUAL_STEPPER_GET_OFFSET_DIFFERENCE_help = "Get the offset"
+    def cmd_MFE_MANUAL_STEPPER_GET_OFFSET_DIFFERENCE(self, gcmd):
+        map1_name = gcmd.get('MAP1')
+        map2_name = gcmd.get('MAP2')
+        if map1_name not in self.offset_map:
+            raise self.printer.command_error("Not fount %s" % (map1_name,))
+        elif map2_name not in self.offset_map:
+            raise self.printer.command_error("Not fount %s" % (map2_name,))
+        gcmd.respond_info("Difference:%s" % 
+            (self.offset_map[map1_name]['offset'] - 
+             self.offset_map[map2_name]['offset']))
     # def touch_move(self, pos, speed):
     #     phoming = self.printer.lookup_object('homing')
     #     return phoming.probing_move(self, pos, speed)
@@ -299,10 +400,6 @@ class MultiFunctionEndstop:
         curtime = self.printer.get_reactor().monotonic()
         # stepper_object = self.stepper_objects[self.axis]
         stepper_object = self.toolhead
-        park_pos_x = gcmd.get_float('X', self.stepper_map[self.axis]['park_pos'][0])
-        park_pos_y = gcmd.get_float('Y', self.stepper_map[self.axis]['park_pos'][1])
-        park_pos_z = gcmd.get_float('Z', self.stepper_map[self.axis]['park_pos'][2])
-        park_pos_f = gcmd.get_int('F', self.move_speed * 60)
         axis_minimum = self.toolhead.get_status(curtime)["axis_minimum"]
         axis_maximum = self.toolhead.get_status(curtime)["axis_maximum"]
         if self.stepper_objects[self.axis] is not None:
@@ -310,20 +407,28 @@ class MultiFunctionEndstop:
             if 'xyz' not in self.toolhead.get_status(curtime)["homed_axes"]:
                 raise self.printer.command_error("Must home before probe")
             # 通过G0指令将打印头移动到指定位置
-            self.gcode.run_script_from_command("G0 X%.2f Y%.2f Z%.2f F%d" % (
-                park_pos_x,
-                park_pos_y,
-                park_pos_z,
-                park_pos_f,
-            ))
-            self.gcode.run_script_from_command("M400")
+            run_gcode = "G1"
+            park_pos_x = gcmd.get_float('X', None)
+            park_pos_y = gcmd.get_float('Y', None)
+            park_pos_z = gcmd.get_float('Z', None)
+            park_pos_f = gcmd.get_float('F', None)
+            if park_pos_x is not None:
+                run_gcode += " X%.2f" % (park_pos_x)
+            if park_pos_y is not None:
+                run_gcode += " Y%.2f" % (park_pos_y)
+            if park_pos_z is not None:
+                run_gcode += " Z%.2f" % (park_pos_z)
+            if park_pos_f is not None:
+                run_gcode += " F%.2f" % (park_pos_f)
+            run_gcode + "\nM400"
+            self.gcode.run_script_from_command(run_gcode)
             # 确定数据
             axis_to_num = ord(self.axis) - ord('x')
             pos = self.toolhead.get_position()
             logging.info("multi_function: %s" % (pos,))
             retract_pos = list(pos)
             touch_pos = list(pos)
-            
+
             if (self.move_distance >= 0):
                 touch_pos[axis_to_num] = min(
                     (touch_pos[axis_to_num] + self.move_distance),
@@ -332,7 +437,7 @@ class MultiFunctionEndstop:
                 touch_pos[axis_to_num] = max(
                     (touch_pos[axis_to_num] + self.move_distance),
                     axis_minimum[axis_to_num])
-                
+
             pos_info = 0
             samples_sum = 0
             retract_len = self.retract_dir * self.sample_retract_dist
@@ -363,7 +468,7 @@ class MultiFunctionEndstop:
                     self._move(retract_pos, self.move_speed)
                 # 计算下一次触摸终结位置
                 touch_pos[axis_to_num] = (epos[axis_to_num] + extend_len)
-            
+
             # 记录位置信息, 打印信息?
             touch_pos[axis_to_num] = samples_sum/self.samples
             self.stepper_map[self.axis]['touch_pos'] = touch_pos[:]
@@ -371,7 +476,6 @@ class MultiFunctionEndstop:
         else:
             self.printer.command_error(
                 "Can't find the %s axis!" % (self.axis,))
-
 
     # get toolheads z offset
     def _move_to_safe_z(self, gcmd):
@@ -782,3 +886,6 @@ class MultiFunctionEndstop:
 
 def load_config(config):
     return MultiFunctionEndstop(config)
+
+def load_config_prefix(config):
+    return load_config(config)
