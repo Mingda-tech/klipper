@@ -1678,6 +1678,9 @@ class ProfileManager:
         self.gcode.register_command(
             'BED_MESH_PROFILE', self.cmd_BED_MESH_PROFILE,
             desc=self.cmd_BED_MESH_PROFILE_help)
+        self.gcode.register_command(
+            'Z_OFFSET_APPLY_BED_MESH', self.cmd_Z_OFFSET_APPLY_BED_MESH,
+            desc=self.cmd_Z_OFFSET_APPLY_BED_MESH_help)
     def get_profiles(self):
         return self.profiles
     def _check_incompatible_profiles(self):
@@ -1777,6 +1780,50 @@ class ProfileManager:
                 return
         gcmd.respond_info("Invalid syntax '%s'" % (gcmd.get_commandline(),))
 
+    def adjust_bed_mesh(self, offset):
+        z_mesh = self.bedmesh.get_mesh()
+        if z_mesh is not None:
+            prof_name = self.bedmesh.get_status()['profile_name']
+            if prof_name == "":
+                self.gcode.respond_info(
+                    "Save bed_mesh failed: Unknown profile.")
+                return
+            probed_matrix = z_mesh.get_probed_matrix()
+            mesh_params = z_mesh.get_mesh_params()
+            configfile = self.printer.lookup_object('configfile')
+            cfg_name = self.name + " " + prof_name
+            # set params
+            z_values = ""
+            for line in probed_matrix:
+                z_values += "\n  "
+                for p in line:
+                    z_values += "%.6f, " % (p + offset)
+                z_values = z_values[:-2]
+            configfile.set(cfg_name, 'version', PROFILE_VERSION)
+            configfile.set(cfg_name, 'points', z_values)
+            for key, value in mesh_params.items():
+                configfile.set(cfg_name, key, value)
+            # save copy in local storage
+            # ensure any self.profiles returned as status remains immutable
+            profiles = dict(self.profiles)
+            profiles[prof_name] = profile = {}
+            profile['points'] = probed_matrix
+            profile['mesh_params'] = collections.OrderedDict(mesh_params)
+            self.profiles = profiles
+            self.bedmesh.update_status()
+            self.gcode.respond_info(
+                "Bed Mesh state has been saved to profile [%s]\n"
+                "for the current session.  The SAVE_CONFIG command will\n"
+                "update the printer config file and restart the printer."
+                % (prof_name))
+    cmd_Z_OFFSET_APPLY_BED_MESH_help = "Adjust the bed_mesh"
+    def cmd_Z_OFFSET_APPLY_BED_MESH(self, gcmd):
+        gcode_move = self.printer.lookup_object("gcode_move")
+        offset = gcode_move.get_status()['homing_origin'].z
+        if offset == 0:
+            gcmd.respond_info("Nothing to do: Z Offset is 0")
+            return
+        self.adjust_bed_mesh(offset)
 
 def load_config(config):
     return BedMesh(config)
