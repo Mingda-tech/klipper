@@ -330,11 +330,10 @@ class ProbeSessionHelper:
         samples_result = gcmd.get("SAMPLES_RESULT", self.samples_result)
         
         samples_mode = 'normal'
+        plum_n = 0
+        plum_s = decr_ds = decr_de = decr_ss = decr_se = 0.
         if samples > 1:
             samples_mode = gcmd.get("SAMPLES_MODE", self.samples_mode)
-            decr_ds = decr_de = decr_ss = decr_se = 0.
-            plum_n = 0
-            plum_s = 0.
             if (samples_mode == 'decreasing'):
                 decr_de = gcmd.get_float("DECR_DIST_E", self.decr_de)
                 decr_ds = gcmd.get_float("DECR_DIST_S", self.decr_ds,
