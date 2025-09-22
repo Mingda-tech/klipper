@@ -214,7 +214,7 @@ class Printer:
         logging.info("Reactor garbage collection: %s",
                      self.reactor.get_gc_stats())
         self.send_event("klippy:notify_mcu_shutdown", msg, details)
-    def invoke_async_shutdown(self, msg, details):
+    def invoke_async_shutdown(self, msg, details={}):
         self.reactor.register_async_callback(
             (lambda e: self.invoke_shutdown(msg, details)))
     def register_event_handler(self, event, callback):
@@ -333,7 +333,8 @@ def main():
             "Git version: %s%s" % (repr(start_args['software_version']),
                                    extra_git_desc),
             "CPU: %s" % (start_args['cpu_info'],),
-            "Python: %s" % (repr(sys.version),)])
+            "Python: %s" % (repr(sys.version),),
+            "Recursion limit: %s" % (sys.getrecursionlimit(),),])
         logging.info(versions)
     elif not options.debugoutput:
         logging.warning("No log file specified!"
