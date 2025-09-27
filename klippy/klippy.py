@@ -327,6 +327,7 @@ def main():
     extra_git_desc += "\nTracked URL: %s" % (git_info["url"])
     start_args['software_version'] = git_vers
     start_args['cpu_info'] = util.get_cpu_info()
+    sys.setrecursionlimit(3000)
     if bglogger is not None:
         versions = "\n".join([
             "Args: %s" % (sys.argv,),
