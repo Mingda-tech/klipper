@@ -140,11 +140,6 @@ class SelectReactor:
         timers.pop(timers.index(timer_handler))
         self._timers = timers
     def _check_timers(self, eventtime, busy):
-        # 设置合理的深度阈值
-        if self._check_timers_depth >= 100:
-            # 添加日志记录，帮助定位问题
-            logging.info("_check_timers error:")
-            return 0.
         if eventtime < self._next_timer:
             if busy:
                 return 0.
@@ -163,7 +158,6 @@ class SelectReactor:
             return min(1., max(.001, self._next_timer - eventtime))
         self._next_timer = self.NEVER
         g_dispatch = self._g_dispatch
-        self._check_timers_depth += 1
         for t in self._timers:
             waketime = t.waketime
             if eventtime >= waketime:
@@ -174,10 +168,8 @@ class SelectReactor:
                 if g_dispatch is not self._g_dispatch:
                     self._next_timer = min(self._next_timer, waketime)
                     self._end_greenlet(g_dispatch)
-                    self._check_timers_depth -= 1 # 退出先回收计数
                     return 0.
             self._next_timer = min(self._next_timer, waketime)
-        self._check_timers_depth -= 1 # 退出先回收计数
         return 0.
     # Callbacks and Completions
     def completion(self):
